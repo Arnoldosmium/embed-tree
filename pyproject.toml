@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "embed-tree"
-version = "0.0.5"
+version = "0.0.6"
 description = "Incremental hierarchical clustering tree over content embeddings"
 readme = "README.md"
 requires-python = ">=3.10"
