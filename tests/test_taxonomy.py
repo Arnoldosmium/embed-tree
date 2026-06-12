@@ -5,7 +5,7 @@ from collections import Counter
 
 import numpy as np
 
-from embed_tree import EmbedTree, FunctionLabeler, JsonTreeLoader, LabelRequest, TreeConfig
+from embed_tree import BranchNode, ContentNode, EmbedTree, FunctionLabeler, JsonTreeLoader, LabelRequest, TreeConfig
 from tests.helpers import FakeTextEmbedder
 
 TOPICS = ["animal", "language", "food"]
@@ -40,7 +40,7 @@ def build_topical_tree(per=10):
     )
     for topic in TOPICS:
         for i in range(per):
-            tree.add(f"{topic} note {i}")
+            tree.add_node(ContentNode(f"{topic}:{i}", f"{topic} note {i}"))
     return tree
 
 
@@ -57,16 +57,16 @@ def _invariants(node, cfg):
 def test_divisive_invariants_and_count():
     cfg = TreeConfig(max_branches=5, leaf_capacity=10, model_args={"random_state": 0})
     tree = EmbedTree(embedder=FakeTextEmbedder(dim=12), config=cfg)
-    tree.add_batch([f"doc-{i}" for i in range(47)])
+    tree.add_nodes([ContentNode(i, f"doc-{i}") for i in range(47)])
     tree.rebalance()
     assert len(tree) == 47
-    _invariants(tree.get_tree(), cfg)
+    _invariants(tree.root, cfg)
 
 
 def test_leaves_are_topic_homogeneous():
     tree = build_topical_tree()
     tree.rebalance()
-    root = tree.get_tree()
+    root = tree.root
     assert not root.is_leaf and len(root.children) == 3
     for leaf in root.children:
         assert leaf.is_leaf and leaf.count == 10
@@ -77,7 +77,7 @@ def test_leaves_are_topic_homogeneous():
 def test_labels_via_injected_labeler():
     tree = build_topical_tree()
     tree.organize(labeler=FunctionLabeler(topic_labeler))
-    root = tree.get_tree()
+    root = tree.root
     assert root.label in TOPICS  # root labeled with dominant topic
     leaf_labels = {leaf.label for leaf in root.children}
     assert leaf_labels == set(TOPICS)  # each leaf named by its topic
@@ -87,11 +87,12 @@ def test_browse_dict_and_show():
     tree = build_topical_tree()
     tree.organize(labeler=FunctionLabeler(topic_labeler))
 
-    d = tree.to_dict(max_items=2)
-    assert d["size"] == 30 and "children" in d
-    leaf = d["children"][0]
-    assert "items" in leaf and len(leaf["items"]) <= 2
-    assert leaf["label"] in TOPICS
+    branch = tree.to_branch(max_items=2)
+    assert branch.count == 30
+    leaf = branch.children[0]
+    assert isinstance(leaf, BranchNode)
+    assert len(leaf.children) <= 2
+    assert leaf.label in TOPICS
 
     text = tree.show(max_items=2)
     assert any(topic in text for topic in TOPICS)
@@ -101,7 +102,7 @@ def test_browse_dict_and_show():
 def test_single_leaf_branch_is_lazy_labeled_and_collapsible():
     tree = build_topical_tree()
     tree.rebalance()
-    tree.remove_batch([*range(10), *range(20, 30)])  # keep only the language leaf
+    tree.remove_batch([*(f"animal:{i}" for i in range(10)), *(f"food:{i}" for i in range(10))])
 
     calls = []
 
@@ -112,10 +113,10 @@ def test_single_leaf_branch_is_lazy_labeled_and_collapsible():
     tree.label(labeler=FunctionLabeler(counting_labeler))
     assert calls == []  # no LLM/labeler call for a non-branching wrapper + sole leaf
 
-    d = tree.to_dict(max_items=2, collapse_single_leaf=True)
-    assert "items" in d and "children" not in d
-    assert d["size"] == 10
-    assert d["label"].startswith("language note")
+    branch = tree.to_branch(max_items=2, collapse_single_leaf=True)
+    assert branch.count == 10
+    assert branch.label.startswith("language note")
+    assert all(isinstance(child, ContentNode) for child in branch.children)
 
     text = tree.show(max_items=1, collapse_single_leaf=True)
     assert "(unlabeled)" not in text
@@ -131,9 +132,9 @@ def test_organize_persistence_keeps_labels(tmp_path):
     )
     for topic in TOPICS:
         for i in range(10):
-            t1.add(f"{topic} note {i}")
+            t1.add_node(ContentNode(f"{topic}:{i}", f"{topic} note {i}"))
     t1.organize(labeler=FunctionLabeler(topic_labeler))
-    labels_before = sorted(c.label for c in t1.get_tree().children)
+    labels_before = sorted(c.label for c in t1.root.children)
 
     t2 = EmbedTree(
         embedder=topical_embedder(),
@@ -141,7 +142,7 @@ def test_organize_persistence_keeps_labels(tmp_path):
         config=TreeConfig(max_branches=3, leaf_capacity=10),
     )
     assert len(t2) == 30
-    labels_after = sorted(c.label for c in t2.get_tree().children)
+    labels_after = sorted(c.label for c in t2.root.children)
     assert labels_before == labels_after  # labels survived reload
 
 
@@ -149,5 +150,5 @@ def test_keyword_labeler_default_when_no_llm():
     # No labeler injected, provider "none" -> KeywordLabeler names nodes.
     tree = build_topical_tree()
     tree.organize()  # uses config.llm (provider none) -> TF-IDF
-    for leaf in tree.get_tree().children:
+    for leaf in tree.root.children:
         assert leaf.label  # non-empty keyword label

@@ -1,57 +1,49 @@
-"""Default representation helpers."""
+"""Serialization helpers for public tree representations."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
-from .model import (
-    ContentNode,
-    KeyNode,
-    NodeAggregate,
-    NodeEmbedding,
-    NodeId,
-    PartialTree,
-    TreeEdge,
-)
+from .model import BranchNode, ContentNode, NodeId
+
+DefaultTreeRepresentation = BranchNode
 
 
-DefaultTreeRepresentation = PartialTree
-
-
-def partial_tree_to_dict(tree: PartialTree) -> dict[str, Any]:
-    """Convert a PartialTree to plain JSON-compatible containers."""
+def tree_to_dict(node: BranchNode | ContentNode) -> dict[str, Any]:
+    if isinstance(node, ContentNode):
+        return {
+            "kind": "content",
+            "id": node.id,
+            "text": node.text,
+            "metadata": node.metadata,
+            "embedding": None if node.embedding is None else list(node.embedding),
+        }
     return {
-        "content_nodes": [asdict(n) for n in tree.content_nodes],
-        "key_nodes": [asdict(n) for n in tree.key_nodes],
-        "edges": [asdict(e) for e in tree.edges],
-        "embeddings": [asdict(e) for e in tree.embeddings.values()],
-        "aggregates": [asdict(a) for a in tree.aggregates.values()],
-        "labels": [{"node_id": node_id, "label": label} for node_id, label in tree.labels.items()],
-        "embedder_config": tree.embedder_config,
-        "projector_state": tree.projector_state,
-        "labeler_config": tree.labeler_config,
-        "reducer_state": tree.reducer_state,
-        "metadata": tree.metadata,
+        "kind": "branch",
+        "id": node.id,
+        "label": node.label,
+        "children": [tree_to_dict(child) for child in node.children],
+        "metadata": node.metadata,
+        "vector_sum": None if node.vector_sum is None else list(node.vector_sum),
+        "count": node.count,
     }
 
 
-def partial_tree_from_dict(data: dict[str, Any]) -> PartialTree:
-    """Build a PartialTree from plain containers."""
-    embeddings = [NodeEmbedding(**d) for d in data.get("embeddings", [])]
-    aggregates = [NodeAggregate(**d) for d in data.get("aggregates", [])]
-    return PartialTree(
-        content_nodes=[ContentNode(**d) for d in data.get("content_nodes", [])],
-        key_nodes=[KeyNode(**d) for d in data.get("key_nodes", [])],
-        edges=[TreeEdge(**d) for d in data.get("edges", [])],
-        embeddings={e.node_id: e for e in embeddings},
-        aggregates={a.node_id: a for a in aggregates},
-        labels={_node_id(d["node_id"]): d["label"] for d in data.get("labels", [])},
-        embedder_config=data.get("embedder_config"),
-        projector_state=data.get("projector_state"),
-        labeler_config=data.get("labeler_config"),
-        reducer_state=data.get("reducer_state"),
+def tree_from_dict(data: dict[str, Any]) -> BranchNode | ContentNode:
+    if data.get("kind") == "content":
+        return ContentNode(
+            id=_node_id(data["id"]),
+            text=data["text"],
+            metadata=data.get("metadata", {}),
+            embedding=data.get("embedding"),
+        )
+    return BranchNode(
+        id=_node_id(data["id"]),
+        label=data.get("label"),
+        children=[tree_from_dict(child) for child in data.get("children", [])],
         metadata=data.get("metadata", {}),
+        vector_sum=data.get("vector_sum"),
+        _count=data.get("count"),
     )
 
 

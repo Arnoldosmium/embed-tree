@@ -1,11 +1,17 @@
 # embed-tree
 
-`embed-tree` turns content embeddings into a browsable, labeled hierarchy.
-It is useful when you have documents, notes, records, or search results and
-want a compact taxonomy that a person can inspect.
+`embed-tree` turns content nodes into a browsable, labeled hierarchy.
 
-The package is model-agnostic: you provide an embedder, and `embed-tree`
-handles clustering, labeling, querying, deletion, and persistence.
+The public model is intentionally small:
+
+```python
+ContentNode(id, text, metadata={})
+BranchNode(id, label=None, children=[])
+EmbedTree(embedder, config=None, state=None, labeler=None)
+```
+
+`ContentNode.text` is the string passed to the embedder. `metadata` is opaque
+user data returned by queries and preserved in exported branches.
 
 ## Install
 
@@ -16,116 +22,79 @@ pip install embed-tree
 Optional integrations:
 
 ```bash
-pip install "embed-tree[openai]"  # OpenAI embeddings and labels
-pip install "embed-tree[local]"   # local Hugging Face embeddings/labels
-pip install "embed-tree[sql]"     # SQLAlchemy loaders/persisters
+pip install "embed-tree[openai]"
+pip install "embed-tree[local]"
+pip install "embed-tree[sql]"
 ```
 
 ## Quick Start
 
 ```python
-from embed_tree import EmbedTree, TagSetEmbedder, TreeConfig
+from embed_tree import ContentNode, EmbedTree, TagSetEmbedder, TreeConfig
+
+nodes = [
+    ContentNode("doc-1", "import pipeline docs", {"tags": ["docs", "ingest"]}),
+    ContentNode("doc-2", "retry handling for ingestion", {"tags": ["ingest"]}),
+    ContentNode("doc-3", "summary generation latency", {"tags": ["analysis"]}),
+    ContentNode("doc-4", "schema mapping examples", {"tags": ["docs", "schemas"]}),
+]
 
 tree = EmbedTree(
     embedder=TagSetEmbedder(["docs", "ingest", "analysis", "schemas"]),
-    config=TreeConfig(max_branches=5, leaf_capacity=10),
+    config=TreeConfig(max_branches=4, leaf_capacity=2),
 )
 
-tree.add_batch(
-    [
-        {"tags": ["docs", "ingest"]},
-        {"tags": ["ingest"]},
-        {"tags": ["analysis"]},
-        {"tags": ["docs", "schemas"]},
-    ],
-    texts=[
-        "Write import pipeline documentation",
-        "Add retry handling to data ingestion",
-        "Reduce summary generation latency",
-        "Document schema mapping examples",
-    ],
-)
-
+tree.add_nodes(nodes)
 tree.organize()
+
 print(tree.show())
+branch = tree.to_branch()
 ```
 
-Use a real embedder in production:
+Use a real text embedder in production:
 
 ```python
-from embed_tree import EmbedTree, OpenAITextEmbedder
+from embed_tree import ContentNode, EmbedTree, OpenAITextEmbedder
 
-tree = EmbedTree(
-    embedder=OpenAITextEmbedder(model="text-embedding-3-small", api_key="..."),
-)
-tree.add("Some document text", payload={"source": "docs"})
+tree = EmbedTree(OpenAITextEmbedder(model="text-embedding-3-small", api_key="..."))
+tree.add_node(ContentNode("doc-1", "Some document summary", {"source": "docs"}))
 ```
 
 ## Core API
 
 ```python
-tree = EmbedTree(embedder, config=None, *, state=None, labeler=None)
+tree.add_node(ContentNode(...))      # -> id
+tree.add_nodes([ContentNode(...)])   # -> list[id]
+tree.add_branch(BranchNode(...))     # -> list[id], inserts all content leaves
 
-tree.add(content, item_id=None, payload=None, text=None)
-tree.add_batch(contents, item_ids=None, payloads=None, texts=None)
-tree.add_node(content_node)
-tree.add_nodes(content_nodes)
-tree.add_partial_tree(partial_tree)
+tree.query("query text", k=10, exhaustive=False)
+tree.remove(node_id)
+tree.remove_batch([node_id])
 
-tree.organize(labeler=None)
 tree.rebalance()
 tree.label(labeler=None)
+tree.organize(labeler=None)
 
-tree.query(content, k=10, exhaustive=False)
-tree.remove(item_id)
-tree.remove_batch(item_ids)
-
+tree.to_branch(max_items=None)
 tree.show(max_items=3)
-tree.to_dict(max_items=5)
-tree.get_tree()
 len(tree)
 ```
 
-`content` is what gets embedded. `text` is the human-readable string used in
-labels and browse output; it defaults to `content` when `content` is a string.
-`payload` is returned in query results and exported browse data.
+`BranchNode` is the public tree shape. It can represent an input branch from a
+loader or the organized output from `EmbedTree.to_branch()`.
+
+`EmbedTree` has internal runtime nodes and content records, but they are not
+public API.
 
 ## Persistence
 
-Use a loader that can also save materialized state:
+Use a state loader that can save materialized state:
 
 ```python
 from embed_tree import EmbedTree, JsonTreeLoader
 
-tree = EmbedTree(
-    embedder=embedder,
-    state=JsonTreeLoader("./tree.json"),
-)
+tree = EmbedTree(embedder, state=JsonTreeLoader("./tree.json"))
 ```
-
-`JsonTreeLoader` writes an atomic JSON snapshot and reloads it when a new tree
-is constructed with the same path.
-
-## Labeling
-
-By default, node labels are generated locally with `KeywordLabeler`. For LLM
-labels, configure `TreeConfig.llm`:
-
-```python
-from embed_tree import LLMConfig, TreeConfig
-
-config = TreeConfig(
-    llm=LLMConfig(provider="openai", model="gpt-4o-mini", api_key="...")
-)
-```
-
-For custom labels, pass a `Labeler` implementation. A small function can be
-adapted with `FunctionLabeler`.
-
-## More Documentation
-
-See [docs/API.md](docs/API.md) for the fuller API reference, loader/persister
-abstractions, PCA options, and extension points.
 
 ## Development
 

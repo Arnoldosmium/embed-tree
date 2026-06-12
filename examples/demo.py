@@ -9,15 +9,15 @@ different ways rather than one sitting at the origin.
 
 import numpy as np
 
-from embed_tree import EmbedTree, JsonTreeLoader, TreeConfig
+from embed_tree import ContentNode, EmbedTree, JsonTreeLoader, TreeConfig
 
 
 def main():
     rng = np.random.default_rng(42)
     centers = {"A": [10, 1], "B": [10, 10], "C": [1, 10]}  # ~6deg / 45deg / ~84deg
 
-    def embed(content):
-        label, _ = content
+    def embed(text):
+        label, _ = text.split(":")
         return np.array(centers[label], dtype=float) + rng.normal(scale=0.4, size=2)
 
     tree = EmbedTree(
@@ -28,13 +28,13 @@ def main():
 
     for label in centers:
         for i in range(40):
-            tree.add((label, i), payload={"label": label})
+            tree.add_node(ContentNode(f"{label}:{i}", f"{label}:{i}", {"label": label}))
 
-    print(f"inserted {len(tree)} items; root is_leaf={tree.get_tree().is_leaf}")
+    print(f"inserted {len(tree)} items")
 
     def near(label):
         v = np.array(centers[label], dtype=float)
-        hits = tree.query((label, 999), k=5)
+        hits = tree.query(f"{label}:999", k=5)
         labels = [p["label"] for _, _, p in hits]
         print(f"query near {label} ({v.tolist()}): top-5 labels = {labels}")
 

@@ -29,14 +29,14 @@ PCA rebalance contract:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Hashable
+from typing import Any, Callable, Hashable, Iterable
 
 import numpy as np
 from sklearn.cluster import KMeans
 
 from .config import TreeConfig
 from .reducers import Reducer
-from .representation import ContentNode, PartialTree
+from .representation import BranchNode, ContentNode
 from .labelers import KeywordLabeler, LabelCandidate, LabelRequest, Labeler, LLMLabeler
 from .persisters import MaterializedTreeState
 
@@ -45,25 +45,25 @@ Vector = np.ndarray
 
 
 @dataclass
-class Item:
+class _StoredContent:
     id: Hashable
     vector: Vector  # routing vector (PCA-reduced if PCA active, else raw)
-    payload: Any = None
+    metadata: Any = None
     raw: Vector | None = None  # original embedding; None means raw == vector
     text: str | None = None  # human-readable text, used for node labels / display
 
 
-def _raw_of(item: Item) -> Vector:
+def _raw_of(item: _StoredContent) -> Vector:
     return item.raw if item.raw is not None else item.vector
 
 
 @dataclass
-class Node:
+class _TreeNode:
     id: int
     vsum: Vector  # running sum of descendant routing vectors
     count: int = 0
-    children: list["Node"] | None = None
-    items: list[Item] | None = field(default=None)
+    children: list["_TreeNode"] | None = None
+    items: list[_StoredContent] | None = field(default=None)
     unsplittable: bool = False  # leaf KMeans could not divide (e.g. dup vectors)
     label: str | None = None  # human-readable topic name (set by label())
 
@@ -100,7 +100,7 @@ class EmbedTree:
         self._next_node_id = 0
         self._next_item_id = 0
         self._inserts_since_rebalance = 0
-        self._warmup_buf: list[Item] = []  # items awaiting first PCA fit
+        self._warmup_buf: list[_StoredContent] = []  # items awaiting first PCA fit
         self._pf_buf: list[Vector] = []  # raw vectors pending partial_fit (incremental)
         self._reset_tree()
 
@@ -110,90 +110,44 @@ class EmbedTree:
 
     # ---------------------------------------------------------------- public
 
-    def add(
-        self,
-        content: Content,
-        *,
-        item_id: Hashable | None = None,
-        payload: Any = None,
-        text: str | None = None,
-    ) -> Hashable:
-        """Embed content, insert it, persist, and return its item id.
+    def add_node(self, node: ContentNode) -> Hashable:
+        """Embed and insert one content leaf."""
+        return self.add_nodes([node])[0]
 
-        `text` is the human-readable string used for node labels and display;
-        it defaults to `content` itself when content is a string.
-        """
-        ids = self.add_batch(
-            [content],
-            item_ids=None if item_id is None else [item_id],
-            payloads=None if payload is None else [payload],
-            texts=None if text is None else [text],
-        )
-        return ids[0]
-
-    def add_batch(
-        self,
-        contents: list[Content],
-        *,
-        item_ids: list[Hashable] | None = None,
-        payloads: list[Any] | None = None,
-        texts: list[str | None] | None = None,
-    ) -> list[Hashable]:
-        """Embed and insert many contents at once, then persist a single time.
-
-        Embedding goes through the embedder's batch path (`embed_batch`) when
-        available — one backend call instead of N — and the snapshot is written
-        once at the end rather than per item.
-        """
-        contents = list(contents)
-        if not contents:
+    def add_nodes(self, nodes: Iterable[ContentNode]) -> list[Hashable]:
+        """Embed and insert many content leaves, then persist once."""
+        nodes = list(nodes)
+        if not nodes:
             return []
-        if item_ids is not None and len(item_ids) != len(contents):
-            raise ValueError("item_ids length must match contents")
-        if payloads is not None and len(payloads) != len(contents):
-            raise ValueError("payloads length must match contents")
-        if texts is not None and len(texts) != len(contents):
-            raise ValueError("texts length must match contents")
-
-        raws = self._embed_many(contents)
+        raws = self._vectors_for_nodes(nodes)
         ids: list[Hashable] = []
-        for i, raw in enumerate(raws):
+        for node, raw in zip(nodes, raws):
             r = self._prep_raw(raw)
-            iid = self._take_item_id(item_ids[i] if item_ids is not None else None)
-            payload = payloads[i] if payloads is not None else None
-            text = texts[i] if texts is not None else None
-            if text is None and isinstance(contents[i], str):
-                text = contents[i]  # default human-readable text to the content
-            self._ingest(Item(iid, vector=r, payload=payload, raw=r, text=text))
-            ids.append(iid)
-
-        self._after_write(len(contents))
+            self._ingest(_StoredContent(node.id, vector=r, metadata=node.metadata, raw=r, text=node.text))
+            ids.append(node.id)
+        self._after_write(len(nodes))
         return ids
 
-    def add_node(self, node: ContentNode) -> Hashable:
-        """Insert one loader-produced content leaf."""
-        return self.add(
-            node.content,
-            item_id=node.id,
-            payload=node.payload,
-            text=node.text,
-        )
+    def add_branch(self, branch: BranchNode) -> list[Hashable]:
+        """Insert all content leaves from a branch."""
+        return self.add_nodes(_content_leaves(branch))
 
-    def add_nodes(self, nodes: list[ContentNode]) -> list[Hashable]:
-        """Insert many loader-produced content leaves."""
-        nodes = list(nodes)
-        return self.add_batch(
-            [node.content for node in nodes],
-            item_ids=[node.id for node in nodes],
-            payloads=[node.payload for node in nodes],
-            texts=[node.text for node in nodes],
-        )
+    def _vectors_for_nodes(self, nodes: list[ContentNode]) -> list[Vector]:
+        out: list[Vector | None] = [None] * len(nodes)
+        missing_indexes: list[int] = []
+        missing_texts: list[str] = []
+        for i, node in enumerate(nodes):
+            if node.embedding is None:
+                missing_indexes.append(i)
+                missing_texts.append(node.text)
+            else:
+                out[i] = np.asarray(node.embedding)
+        if missing_texts:
+            for i, vector in zip(missing_indexes, self._embed_many(missing_texts)):
+                out[i] = vector
+        return [np.asarray(vector) for vector in out if vector is not None]
 
-    def add_partial_tree(self, tree: PartialTree) -> list[Hashable]:
-        """Insert all content leaves from a loader-produced partial tree."""
-        return self.add_nodes(tree.content_nodes)
-
-    def _embed_many(self, contents: list[Content]) -> list[Vector]:
+    def _embed_many(self, contents: list[str]) -> list[Vector]:
         """Embed via the embedder's batch API if it has one, else one by one."""
         batch_fn = getattr(self.embedder, "embed_batch", None)
         if callable(batch_fn):
@@ -210,7 +164,7 @@ class EmbedTree:
             self._save_state()
 
     def query(self, content: Content, k: int = 10, *, exhaustive: bool = False) -> list[tuple[Hashable, float, Any]]:
-        """Return up to k nearest items as (item_id, distance, payload).
+        """Return up to k nearest items as (item_id, distance, metadata).
 
         During PCA warmup (before the projection is fitted), all items live in a
         buffer and are scanned in raw space. Otherwise routes to a single leaf
@@ -264,7 +218,7 @@ class EmbedTree:
         self._prune_empty(path)
         return True
 
-    def _find_path(self, node: Node, item_id: Hashable) -> list[Node] | None:
+    def _find_path(self, node: _TreeNode, item_id: Hashable) -> list[_TreeNode] | None:
         """DFS for the leaf holding item_id; return the root->leaf path or None."""
         if node.is_leaf:
             return [node] if any(it.id == item_id for it in (node.items or [])) else None
@@ -274,7 +228,7 @@ class EmbedTree:
                 return [node, *sub]
         return None
 
-    def _prune_empty(self, path: list[Node]) -> None:
+    def _prune_empty(self, path: list[_TreeNode]) -> None:
         """Drop now-empty leaves bottom-up; a parent emptied of all children
         collapses back into an empty leaf. The root is always kept."""
         for parent, child in zip(reversed(path[:-1]), reversed(path[1:])):
@@ -331,9 +285,9 @@ class EmbedTree:
         self.rebalance()
         self.label(labeler)
 
-    def to_dict(self, *, max_items: int = 5, collapse_single_leaf: bool = False) -> dict:
-        """Export the tree as a human-readable nested dict for browsing."""
-        return self._browse(self.root, max_items, collapse_single_leaf)
+    def to_branch(self, *, max_items: int | None = None, collapse_single_leaf: bool = False) -> BranchNode:
+        """Export the organized tree as public BranchNode/ContentNode data."""
+        return self._to_branch(self.root, max_items, collapse_single_leaf)
 
     def show(self, *, max_items: int = 3, collapse_single_leaf: bool = False) -> str:
         """Pretty-print the taxonomy as an indented outline."""
@@ -341,15 +295,12 @@ class EmbedTree:
         self._show(self.root, 0, max_items, collapse_single_leaf, lines)
         return "\n".join(lines)
 
-    def get_tree(self) -> Node:
-        return self.root
-
     def __len__(self) -> int:
         return self.root.count + len(self._warmup_buf)
 
     # --------------------------------------------------------- taxonomy build
 
-    def _divisive(self, items: list[Item]) -> Node:
+    def _divisive(self, items: list[_StoredContent]) -> _TreeNode:
         """Recursively split items into <= max_branches clusters until each
         group fits in a leaf (<= leaf_capacity). Top-down, balanced, clean."""
         node = self._new_node()
@@ -362,7 +313,7 @@ class EmbedTree:
 
         k = min(self.config.max_branches, len(items))
         labels = KMeans(n_clusters=k, n_init="auto", **self.config.model_args).fit_predict(vecs)
-        buckets: dict[int, list[Item]] = {}
+        buckets: dict[int, list[_StoredContent]] = {}
         for lbl, it in zip(labels, items):
             buckets.setdefault(int(lbl), []).append(it)
 
@@ -374,14 +325,14 @@ class EmbedTree:
         node.children = [self._divisive(b) for b in buckets.values()]
         return node
 
-    def _empty_root(self) -> Node:
+    def _empty_root(self) -> _TreeNode:
         root = self._new_node()
         root.items = []
         return root
 
     # ------------------------------------------------------------- labeling
 
-    def _label_node(self, node: Node, labeler: Labeler, *, sibling_count: int) -> None:
+    def _label_node(self, node: _TreeNode, labeler: Labeler, *, sibling_count: int) -> None:
         child_count = len(node.children or [])
         should_label = child_count > 1 or sibling_count > 1
         if should_label:
@@ -394,14 +345,14 @@ class EmbedTree:
             for child in node.children or []:
                 self._label_node(child, labeler, sibling_count=child_count)
 
-    def _label_candidates(self, node: Node) -> list[LabelCandidate]:
+    def _label_candidates(self, node: _TreeNode) -> list[LabelCandidate]:
         items = [it for it in self._node_items(node) if it.text]
         if not items:
             return []
         c = node.centroid
         items.sort(key=lambda it: _dist(c, it.vector))  # closest to centroid first
         return [
-            LabelCandidate(id=it.id, text=it.text or "", distance=_dist(c, it.vector), payload=it.payload)
+            LabelCandidate(id=it.id, text=it.text or "", distance=_dist(c, it.vector), metadata=it.metadata)
             for it in items[: self.config.llm.max_samples]
         ]
 
@@ -412,21 +363,30 @@ class EmbedTree:
 
     # -------------------------------------------------------------- browsing
 
-    def _browse(self, node: Node, max_items: int, collapse_single_leaf: bool) -> dict:
+    def _to_branch(self, node: _TreeNode, max_items: int | None, collapse_single_leaf: bool) -> BranchNode:
         display_node = self._display_node(node, collapse_single_leaf)
-        d: dict[str, Any] = {"label": self._display_label(node), "size": node.count}
         if display_node.is_leaf:
-            d["items"] = [
-                {"id": it.id, "text": it.text, "payload": it.payload}
-                for it in (display_node.items or [])[:max_items]
+            items = display_node.items or []
+            if max_items is not None:
+                items = items[:max_items]
+            children: list[BranchNode | ContentNode] = [
+                ContentNode(id=it.id, text=it.text or str(it.id), metadata=dict(it.metadata or {}), embedding=it.vector.tolist())
+                for it in items
             ]
         else:
-            d["children"] = [self._browse(c, max_items, collapse_single_leaf) for c in node.children or []]
-        return d
+            children = [self._to_branch(c, max_items, collapse_single_leaf) for c in node.children or []]
+        branch = BranchNode(
+            id=node.id,
+            label=self._display_label(node),
+            children=children,
+            vector_sum=node.vsum.tolist(),
+        )
+        branch.count = node.count
+        return branch
 
     def _show(
         self,
-        node: Node,
+        node: _TreeNode,
         depth: int,
         max_items: int,
         collapse_single_leaf: bool,
@@ -442,7 +402,7 @@ class EmbedTree:
             for child in node.children or []:
                 self._show(child, depth + 1, max_items, collapse_single_leaf, lines)
 
-    def _display_node(self, node: Node, collapse_single_leaf: bool) -> Node:
+    def _display_node(self, node: _TreeNode, collapse_single_leaf: bool) -> _TreeNode:
         if not collapse_single_leaf:
             return node
         current = node
@@ -453,7 +413,7 @@ class EmbedTree:
             current = child
         return node
 
-    def _display_label(self, node: Node) -> str:
+    def _display_label(self, node: _TreeNode) -> str:
         if node.label:
             return node.label
         if node.is_leaf:
@@ -464,7 +424,7 @@ class EmbedTree:
 
     # ---------------------------------------------------------- ingestion
 
-    def _ingest(self, item: Item) -> None:
+    def _ingest(self, item: _StoredContent) -> None:
         # No PCA: route in raw space, raw == vector (store once).
         if self.reducer.kind == "identity":
             item.vector = self._prep_routing(item.vector)
@@ -495,7 +455,7 @@ class EmbedTree:
         self._reset_tree()
         self._bulk_insert(buf)
 
-    def _bulk_insert(self, items: list[Item]) -> None:
+    def _bulk_insert(self, items: list[_StoredContent]) -> None:
         for it in items:
             it.vector = self._route_vector(_raw_of(it))
             it.raw = _raw_of(it)  # ensure raw retained for future rebalance
@@ -503,7 +463,7 @@ class EmbedTree:
 
     # --------------------------------------------------------------- routing
 
-    def _route(self, vec: Vector) -> list[Node]:
+    def _route(self, vec: Vector) -> list[_TreeNode]:
         """Descend root->leaf by nearest centroid; return the path of nodes."""
         node = self.root
         path = [node]
@@ -512,7 +472,7 @@ class EmbedTree:
             path.append(node)
         return path
 
-    def _insert(self, item: Item) -> None:
+    def _insert(self, item: _StoredContent) -> None:
         path = self._route(item.vector)
         for node in path:  # update centroids along the path
             # vsum starts empty (dim unknown until the first vector arrives)
@@ -525,13 +485,13 @@ class EmbedTree:
 
     # --------------------------------------------------------------- splitting
 
-    def _split(self, leaf: Node) -> None:
+    def _split(self, leaf: _TreeNode) -> None:
         items = leaf.items or []
         k = min(self.config.max_branches, len(items))
         X = np.stack([it.vector for it in items])
         labels = KMeans(n_clusters=k, n_init="auto", **self.config.model_args).fit_predict(X)
 
-        buckets: dict[int, list[Item]] = {}
+        buckets: dict[int, list[_StoredContent]] = {}
         for lbl, it in zip(labels, items):
             buckets.setdefault(int(lbl), []).append(it)
 
@@ -539,7 +499,7 @@ class EmbedTree:
             leaf.unsplittable = True
             return
 
-        children: list[Node] = []
+        children: list[_TreeNode] = []
         for bucket in buckets.values():
             child = self._new_node()
             child.items = bucket
@@ -573,15 +533,15 @@ class EmbedTree:
     def _prep_routing(self, vec: Vector) -> Vector:
         return _normalize(np.asarray(vec, dtype=np.float64).ravel())
 
-    def _rank(self, q: Vector, items: list[Item], k: int) -> list[tuple[Hashable, float, Any]]:
+    def _rank(self, q: Vector, items: list[_StoredContent], k: int) -> list[tuple[Hashable, float, Any]]:
         scored = sorted(((_dist(q, it.vector), it) for it in items), key=lambda t: t[0])
-        return [(it.id, float(d), it.payload) for d, it in scored[:k]]
+        return [(it.id, float(d), it.metadata) for d, it in scored[:k]]
 
-    def _all_items(self) -> list[Item]:
+    def _all_items(self) -> list[_StoredContent]:
         return self._node_items(self.root)
 
-    def _node_items(self, node: Node) -> list[Item]:
-        out: list[Item] = []
+    def _node_items(self, node: _TreeNode) -> list[_StoredContent]:
+        out: list[_StoredContent] = []
         stack = [node]
         while stack:
             n = stack.pop()
@@ -596,8 +556,8 @@ class EmbedTree:
         self.root = self._new_node()
         self.root.items = []
 
-    def _new_node(self) -> Node:
-        node = Node(id=self._next_node_id, vsum=np.zeros(0), count=0)
+    def _new_node(self) -> _TreeNode:
+        node = _TreeNode(id=self._next_node_id, vsum=np.zeros(0), count=0)
         self._next_node_id += 1
         return node
 
@@ -643,7 +603,7 @@ class EmbedTree:
         if self.state is not None and hasattr(self.state, "save"):
             self.state.save(self.dump())
 
-    def _dict_to_node(self, d: dict) -> Node:
+    def _dict_to_node(self, d: dict) -> _TreeNode:
         node = self._new_node()
         node.vsum = np.asarray(d["vsum"], dtype=np.float64)
         node.count = d["count"]
@@ -656,28 +616,28 @@ class EmbedTree:
         return node
 
 
-def _item_to_dict(it: Item) -> dict:
+def _item_to_dict(it: _StoredContent) -> dict:
     return {
         "id": it.id,
         "vector": it.vector.tolist(),
-        "payload": it.payload,
+        "metadata": it.metadata,
         "raw": None if it.raw is None else it.raw.tolist(),
         "text": it.text,
     }
 
 
-def _dict_to_item(d: dict) -> Item:
+def _dict_to_item(d: dict) -> _StoredContent:
     raw = d.get("raw")
-    return Item(
+    return _StoredContent(
         id=d["id"],
         vector=np.asarray(d["vector"], dtype=np.float64),
-        payload=d.get("payload"),
+        metadata=d.get("metadata"),
         raw=None if raw is None else np.asarray(raw, dtype=np.float64),
         text=d.get("text"),
     )
 
 
-def _node_to_dict(node: Node) -> dict:
+def _node_to_dict(node: _TreeNode) -> dict:
     d: dict[str, Any] = {
         "vsum": node.vsum.tolist(),
         "count": node.count,
@@ -707,3 +667,15 @@ def _normalize(v: Vector) -> Vector:
 def _dist(a: Vector, b: Vector) -> float:
     """Euclidean distance over already-normalized vectors (== cosine ranking)."""
     return float(np.linalg.norm(a - b))
+
+
+def _content_leaves(branch: BranchNode) -> list[ContentNode]:
+    leaves: list[ContentNode] = []
+    stack: list[BranchNode | ContentNode] = [branch]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ContentNode):
+            leaves.append(node)
+        else:
+            stack.extend(reversed(node.children))
+    return leaves

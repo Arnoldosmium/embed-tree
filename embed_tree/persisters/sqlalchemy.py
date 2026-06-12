@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from embed_tree.representation import PartialTree
+from embed_tree.representation import BranchNode, ContentNode
 
 
 class SQLAlchemyTreePersister:
-    """Persist PartialTree content nodes to a SQL table via SQLAlchemy Core."""
+    """Persist ContentNode leaves from a BranchNode to a SQL table."""
 
     def __init__(
         self,
@@ -16,21 +16,18 @@ class SQLAlchemyTreePersister:
         table_name: str,
         *,
         id_column: str = "id",
-        content_column: str = "content",
         text_column: str = "text",
-        payload_column: str = "payload",
+        metadata_column: str = "metadata",
     ) -> None:
         self.engine_or_url = engine_or_url
         self.table_name = table_name
         self.id_column = id_column
-        self.content_column = content_column
         self.text_column = text_column
-        self.payload_column = payload_column
+        self.metadata_column = metadata_column
 
-    def save(self, state: Any) -> None:
-        if not isinstance(state, PartialTree):
-            raise TypeError("SQLAlchemyTreePersister only persists PartialTree instances")
-
+    def save(self, state: BranchNode) -> None:
+        if not isinstance(state, BranchNode):
+            raise TypeError("SQLAlchemyTreePersister persists BranchNode instances")
         sa = _sqlalchemy()
         engine = _engine(sa, self.engine_or_url)
         table = self._table(sa)
@@ -38,11 +35,10 @@ class SQLAlchemyTreePersister:
         rows = [
             {
                 self.id_column: node.id,
-                self.content_column: node.content,
                 self.text_column: node.text,
-                self.payload_column: node.payload,
+                self.metadata_column: node.metadata,
             }
-            for node in state.content_nodes
+            for node in _content_leaves(state)
         ]
         with engine.begin() as conn:
             conn.execute(table.delete())
@@ -55,10 +51,21 @@ class SQLAlchemyTreePersister:
             self.table_name,
             meta,
             sa.Column(self.id_column, sa.String, primary_key=True),
-            sa.Column(self.content_column, sa.Text, nullable=False),
-            sa.Column(self.text_column, sa.Text),
-            sa.Column(self.payload_column, sa.JSON),
+            sa.Column(self.text_column, sa.Text, nullable=False),
+            sa.Column(self.metadata_column, sa.JSON),
         )
+
+
+def _content_leaves(branch: BranchNode) -> list[ContentNode]:
+    leaves: list[ContentNode] = []
+    stack: list[BranchNode | ContentNode] = [branch]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ContentNode):
+            leaves.append(node)
+        else:
+            stack.extend(reversed(node.children))
+    return leaves
 
 
 def _sqlalchemy() -> Any:
@@ -73,4 +80,3 @@ def _engine(sa: Any, engine_or_url: Any) -> Any:
     if isinstance(engine_or_url, str):
         return sa.create_engine(engine_or_url)
     return engine_or_url
-

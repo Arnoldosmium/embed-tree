@@ -16,7 +16,7 @@ class TagSetEmbedder:
     Input can be:
     - an iterable of tag strings;
     - a mapping with a `tags` field;
-    - a single tag string.
+    - free text containing known tag words.
     """
 
     def __init__(self, tags: Iterable[str], *, unknown: str = "ignore") -> None:
@@ -45,7 +45,8 @@ class TagSetEmbedder:
 
     def _tags_from(self, content: Any) -> list[str]:
         if isinstance(content, str):
-            return [content]
+            text = content.lower()
+            return [tag for tag in self.tags if tag.lower() in text]
         if isinstance(content, Mapping):
             content = content.get("tags", [])
         return [str(tag) for tag in content]

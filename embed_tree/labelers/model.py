@@ -13,7 +13,7 @@ class LabelCandidate:
     id: Any
     text: str
     distance: float | None = None
-    payload: Any = None
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -35,4 +35,3 @@ class Labeler(Protocol):
     def label(self, request: LabelRequest) -> str:
         """Return the full label."""
         ...
-

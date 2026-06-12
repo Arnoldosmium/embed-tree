@@ -1,4 +1,4 @@
-"""Filesystem-backed ground-truth loader."""
+"""Filesystem-backed tree loader."""
 
 from __future__ import annotations
 
@@ -6,16 +6,11 @@ import hashlib
 from pathlib import Path
 from typing import Iterable
 
-from embed_tree.representation import ContentNode, KeyNode, PartialTree, TreeEdge
+from embed_tree.representation import BranchNode, ContentNode
 
 
 class FileSystemTreeLoader:
-    """Load files under a directory as content nodes.
-
-    Directory nodes are emitted as ``KeyNode`` records with edges to their child
-    directories/files. File node ids are MD5 hashes of their file bytes, so the
-    same file keeps its identity when it moves locally.
-    """
+    """Load files under a directory as a recursive BranchNode tree."""
 
     def __init__(
         self,
@@ -30,46 +25,44 @@ class FileSystemTreeLoader:
         self.encoding = encoding
         self.include_hidden = include_hidden
 
-    def load(self) -> PartialTree | None:
+    def load(self) -> BranchNode | None:
         if not self.root.exists():
             return None
+        return self._load_dir(self.root, ".")
 
-        tree = PartialTree(metadata={"source": "filesystem", "root": str(self.root)})
-        root_id = "."
-        tree.key_nodes.append(KeyNode(id=root_id, label=self.root.name or str(self.root)))
-
-        for path in sorted(self.root.rglob("*")):
-            rel = path.relative_to(self.root).as_posix()
-            if not self.include_hidden and any(part.startswith(".") for part in path.relative_to(self.root).parts):
+    def _load_dir(self, path: Path, node_id: str) -> BranchNode:
+        branch = BranchNode(
+            id=node_id,
+            label=path.name or str(path),
+            metadata={"path": str(path), "relative_path": "." if path == self.root else path.relative_to(self.root).as_posix()},
+        )
+        for child in sorted(path.iterdir()):
+            if not self.include_hidden and child.name.startswith("."):
                 continue
-            parent = path.parent.relative_to(self.root).as_posix() if path.parent != self.root else root_id
-            if path.is_dir():
-                tree.key_nodes.append(KeyNode(id=rel, label=path.name))
-                tree.edges.append(TreeEdge(parent_id=parent, child_id=rel))
+            rel = child.relative_to(self.root).as_posix()
+            if child.is_dir():
+                branch.children.append(self._load_dir(child, rel))
                 continue
-            if not path.is_file() or not self._included(path):
+            if not child.is_file() or not self._included(child):
                 continue
-            file_id = _file_md5(path)
             try:
-                content = path.read_text(encoding=self.encoding)
+                text = child.read_text(encoding=self.encoding)
             except UnicodeDecodeError:
                 continue
-            tree.content_nodes.append(
+            file_id = _file_md5(child)
+            branch.children.append(
                 ContentNode(
                     id=file_id,
-                    content=content,
-                    text=path.stem,
-                    payload={
-                        "path": str(path),
+                    text=text,
+                    metadata={
+                        "path": str(child),
                         "relative_path": rel,
-                        "filename": path.name,
+                        "filename": child.name,
+                        "version": file_id,
                     },
-                    version=file_id,
                 )
             )
-            tree.edges.append(TreeEdge(parent_id=parent, child_id=file_id))
-
-        return tree
+        return branch
 
     def _included(self, path: Path) -> bool:
         return self.include_suffixes is None or path.suffix.lower() in self.include_suffixes

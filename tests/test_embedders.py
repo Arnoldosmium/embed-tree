@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from embed_tree import EmbedTree, OpenAITextEmbedder, TagSetEmbedder, TreeConfig
+from embed_tree import ContentNode, EmbedTree, OpenAITextEmbedder, TagSetEmbedder, TreeConfig
 from tests.helpers import FakeTextEmbedder
 
 
@@ -70,7 +70,7 @@ def test_embedder_plugs_into_tree():
         config=TreeConfig(leaf_capacity=20, max_branches=4),
     )
     for i in range(60):
-        tree.add(f"doc-{i}")
+        tree.add_node(ContentNode(i, f"doc-{i}"))
     assert len(tree) == 60
 
 

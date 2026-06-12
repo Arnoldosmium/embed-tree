@@ -1,27 +1,14 @@
-"""Storage-neutral representation types."""
+"""Public tree representation types."""
 
-from .model import (
-    ContentNode,
-    KeyNode,
-    NodeAggregate,
-    NodeEmbedding,
-    NodeId,
-    PartialTree,
-    TreeEdge,
-    VectorData,
-)
-from .default import DefaultTreeRepresentation, partial_tree_from_dict, partial_tree_to_dict
+from .default import DefaultTreeRepresentation, tree_from_dict, tree_to_dict
+from .model import BranchNode, ContentNode, NodeId, VectorData
 
 __all__ = [
-    "DefaultTreeRepresentation",
+    "BranchNode",
     "ContentNode",
-    "KeyNode",
-    "NodeAggregate",
-    "NodeEmbedding",
+    "DefaultTreeRepresentation",
     "NodeId",
-    "PartialTree",
-    "TreeEdge",
     "VectorData",
-    "partial_tree_from_dict",
-    "partial_tree_to_dict",
+    "tree_from_dict",
+    "tree_to_dict",
 ]

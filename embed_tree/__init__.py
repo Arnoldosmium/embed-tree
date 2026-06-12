@@ -42,24 +42,18 @@ from .reducers import (
 )
 from .reconcilers import DefaultTreeReconciler, TreeReconciler
 from .representation import (
+    BranchNode,
     ContentNode,
     DefaultTreeRepresentation,
-    KeyNode,
-    NodeAggregate,
-    NodeEmbedding,
     NodeId,
-    PartialTree,
-    TreeEdge,
     VectorData,
-    partial_tree_from_dict,
-    partial_tree_to_dict,
+    tree_from_dict,
+    tree_to_dict,
 )
-from .tree import EmbedTree, Item, Node
+from .tree import EmbedTree
 
 __all__ = [
     "EmbedTree",
-    "Item",
-    "Node",
     "TreeConfig",
     "RebalanceConfig",
     "LLMConfig",
@@ -93,16 +87,12 @@ __all__ = [
     "JsonTreePersister",
     "SQLAlchemyTreePersister",
     "DefaultTreeRepresentation",
-    "PartialTree",
+    "BranchNode",
     "ContentNode",
-    "KeyNode",
-    "TreeEdge",
-    "NodeEmbedding",
-    "NodeAggregate",
     "NodeId",
     "VectorData",
-    "partial_tree_from_dict",
-    "partial_tree_to_dict",
+    "tree_from_dict",
+    "tree_to_dict",
     "Reducer",
     "IdentityReducer",
     "FreezePCAReducer",

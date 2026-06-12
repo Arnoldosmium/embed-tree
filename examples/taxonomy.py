@@ -9,7 +9,7 @@ from the no-network KeywordLabeler (set config.llm to use an LLM instead).
 
 import numpy as np
 
-from embed_tree import EmbedTree, TreeConfig
+from embed_tree import ContentNode, EmbedTree, TreeConfig
 
 DOCS = [
     "Write import pipeline documentation",
@@ -52,7 +52,7 @@ def main():
         embedder=make_embedder(),
         config=TreeConfig(max_branches=4, leaf_capacity=4, model_args={"random_state": 0}),
     )
-    tree.add_batch(DOCS)         # each item's text defaults from the content string
+    tree.add_nodes([ContentNode(i, text) for i, text in enumerate(DOCS)])
     tree.organize()              # rebuild clean taxonomy + label nodes
 
     print(tree.show(max_items=3))

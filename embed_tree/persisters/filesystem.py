@@ -6,21 +6,14 @@ import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from embed_tree.representation import ContentNode, KeyNode, NodeId, PartialTree
+from embed_tree.representation import BranchNode, ContentNode
 
 _UNSAFE_PATH_CHARS = re.compile(r'[\\/:*?"<>|#\[\]^\n\r\t]+')
 
 
 class FolderTreePersister:
-    """Materialize a live tree as folders and files.
-
-    The local folder is treated as mutable ground truth: every save reloads its
-    current file-md5 map, compares it with the target layout from the in-memory
-    tree, moves known files into place, creates missing files only when content
-    is available, prunes empty folders, and leaves unknown files untouched.
-    """
+    """Materialize a BranchNode as folders and files."""
 
     def __init__(
         self,
@@ -35,11 +28,12 @@ class FolderTreePersister:
         self.encoding = encoding
         self.include_hidden = include_hidden
 
-    def save(self, state: Any) -> None:
+    def save(self, state: BranchNode) -> None:
+        if not isinstance(state, BranchNode):
+            raise TypeError("FolderTreePersister persists BranchNode instances")
         self.root.mkdir(parents=True, exist_ok=True)
         current = self._current_files_by_md5()
-        desired = self._desired_files(state, current)
-
+        desired = list(self._desired_files(state, Path(), current, include_self=False))
         reserved: set[Path] = set()
         for file in desired:
             target = _unique_path(self.root / file.folder / file.filename, reserved)
@@ -47,18 +41,39 @@ class FolderTreePersister:
             existing = current.get(file.md5)
             if existing is not None:
                 self._move_file(existing, target)
-            elif file.content is not None:
+            else:
                 self._write_file(target, file.content)
-
         self._prune_empty_dirs()
 
-    def _desired_files(self, state: Any, current: dict[str, Path]) -> list["_DesiredFile"]:
-        tree = state.get_tree() if hasattr(state, "get_tree") and callable(state.get_tree) else state
-        if isinstance(tree, PartialTree):
-            return self._desired_files_from_partial_tree(tree, current)
-        if _looks_like_live_node(tree):
-            return list(self._desired_files_from_live_node(tree, current))
-        raise TypeError("FolderTreePersister persists an EmbedTree, live Node, or PartialTree")
+    def _desired_files(
+        self,
+        node: BranchNode | ContentNode,
+        folder: Path,
+        current: dict[str, Path],
+        *,
+        include_self: bool,
+    ):
+        if isinstance(node, ContentNode):
+            yield self._desired_file_for_node(node, folder, current)
+            return
+
+        next_folder = folder
+        if include_self:
+            next_folder = folder / _safe_name(node.label or str(node.id))
+        used: set[str] = set()
+        for index, child in enumerate(node.children):
+            if isinstance(child, BranchNode):
+                label = _dedupe_name(_safe_name(child.label or f"topic-{index + 1}"), used)
+                yield from self._desired_files(child, next_folder / label, current, include_self=False)
+            else:
+                yield from self._desired_files(child, next_folder, current, include_self=False)
+
+    def _desired_file_for_node(self, node: ContentNode, folder: Path, current: dict[str, Path]) -> "_DesiredFile":
+        md5 = self._md5_for_node(node)
+        existing = current.get(md5)
+        filename = self._filename_for_node(node, existing)
+        content = str(node.metadata.get("content", node.text))
+        return _DesiredFile(md5, folder, filename, content)
 
     def _current_files_by_md5(self) -> dict[str, Path]:
         files: dict[str, Path] = {}
@@ -71,142 +86,25 @@ class FolderTreePersister:
             files.setdefault(_file_md5(path), path)
         return files
 
-    def _desired_files_from_partial_tree(
-        self,
-        tree: PartialTree,
-        current: dict[str, Path],
-    ) -> list["_DesiredFile"]:
-        key_nodes = {node.id: node for node in tree.key_nodes}
-        parent_by_child = {edge.child_id: edge.parent_id for edge in tree.edges}
-        desired: list[_DesiredFile] = []
-
-        for node in tree.content_nodes:
-            folder = self._folder_for(node.id, key_nodes, parent_by_child)
-            filename = self._filename_for_node(node, current.get(str(node.id)))
-            content = None if node.content is None else str(node.content)
-            desired.append(_DesiredFile(str(node.id), folder, filename, content))
-        return desired
-
-    def _desired_files_from_live_node(
-        self,
-        root: Any,
-        current: dict[str, Path],
-    ) -> list["_DesiredFile"]:
-        if root.is_leaf:
-            folder = Path(_safe_name(root.label or "topics"))
-            return [
-                file
-                for item in root.items or []
-                if (file := self._desired_file_for_item(item, folder, current)) is not None
-            ]
-
-        desired: list[_DesiredFile] = []
-        self._collect_live_node_files(root, Path(), current, desired, include_self=False)
-        return desired
-
-    def _collect_live_node_files(
-        self,
-        node: Any,
-        prefix: Path,
-        current: dict[str, Path],
-        desired: list["_DesiredFile"],
-        *,
-        include_self: bool,
-    ) -> None:
-        folder = prefix
-        if include_self:
-            folder = prefix / _safe_name(node.label or f"topic-{getattr(node, 'id', 'node')}")
-        if node.is_leaf:
-            for item in node.items or []:
-                file = self._desired_file_for_item(item, folder, current)
-                if file is not None:
-                    desired.append(file)
-            return
-
-        used: set[str] = set()
-        for index, child in enumerate(node.children or []):
-            label = _dedupe_name(_safe_name(child.label or f"topic-{index + 1}"), used)
-            self._collect_live_node_files(child, folder / label, current, desired, include_self=False)
-
-    def _desired_file_for_item(
-        self,
-        item: Any,
-        folder: Path,
-        current: dict[str, Path],
-    ) -> "_DesiredFile | None":
-        md5 = self._md5_for_item(item)
-        if md5 is None:
-            return None
-        existing = current.get(md5)
-        filename = self._filename_for_item(item, existing)
-        content = self._content_for_item(item)
-        return _DesiredFile(md5, folder, filename, content)
-
-    def _folder_for(
-        self,
-        node_id: NodeId,
-        key_nodes: dict[NodeId, KeyNode],
-        parent_by_child: dict[NodeId, NodeId],
-    ) -> Path:
-        parts: list[str] = []
-        current = parent_by_child.get(node_id)
-        seen: set[NodeId] = set()
-        while current is not None and current not in seen:
-            seen.add(current)
-            if str(current) == ".":
-                break
-            key = key_nodes.get(current)
-            raw = key.label if key is not None and key.label else str(current)
-            part = _safe_name(raw)
-            if part:
-                parts.append(part)
-            current = parent_by_child.get(current)
-        return Path(*reversed(parts)) if parts else Path()
+    def _md5_for_node(self, node: ContentNode) -> str:
+        if _is_md5(str(node.id)):
+            return str(node.id)
+        for key in ("md5", "file_md5", "content_md5", "content_id"):
+            value = node.metadata.get(key)
+            if value is not None and _is_md5(str(value)):
+                return str(value)
+        return hashlib.md5(node.text.encode(self.encoding)).hexdigest()
 
     def _filename_for_node(self, node: ContentNode, existing: Path | None) -> str:
         if existing is not None:
             return existing.name
-        payload = node.payload if isinstance(node.payload, dict) else {}
-        for key in ("filename", "relative_path", "path"):
-            value = payload.get(key)
+        for key in ("filename", "relative_path", "output_path", "path"):
+            value = node.metadata.get(key)
             if value:
                 name = Path(str(value)).name
                 if name:
                     return _safe_name(name, fallback=f"{node.id}.txt")
-        text = node.text.strip() if isinstance(node.text, str) else ""
-        return _safe_name(text, fallback=f"{node.id}.txt")
-
-    def _md5_for_item(self, item: Any) -> str | None:
-        item_id = str(item.id)
-        if _is_md5(item_id):
-            return item_id
-        payload = item.payload if isinstance(item.payload, dict) else {}
-        for key in ("md5", "file_md5", "content_md5", "content_id", "id"):
-            value = payload.get(key)
-            if value is not None and _is_md5(str(value)):
-                return str(value)
-        return None
-
-    def _filename_for_item(self, item: Any, existing: Path | None) -> str:
-        if existing is not None:
-            return existing.name
-        payload = item.payload if isinstance(item.payload, dict) else {}
-        for key in ("filename", "relative_path", "output_path", "path"):
-            value = payload.get(key)
-            if value:
-                name = Path(str(value)).name
-                if name:
-                    return _safe_name(name, fallback=f"{item.id}.txt")
-        text = item.text.strip() if isinstance(item.text, str) else ""
-        return _safe_name(text, fallback=f"{item.id}.txt")
-
-    def _content_for_item(self, item: Any) -> str | None:
-        payload = item.payload if isinstance(item.payload, dict) else {}
-        for key in ("content", "body", "text"):
-            value = payload.get(key)
-            if value is not None:
-                return str(value)
-        return None
+        return _safe_name(node.text, fallback=f"{node.id}.txt")
 
     def _move_file(self, source: Path, target: Path) -> None:
         if source == target:
@@ -219,11 +117,7 @@ class FolderTreePersister:
         target.write_text(content, encoding=self.encoding)
 
     def _prune_empty_dirs(self) -> None:
-        for directory in sorted(
-            (path for path in self.root.rglob("*") if path.is_dir()),
-            key=lambda path: len(path.parts),
-            reverse=True,
-        ):
+        for directory in sorted((p for p in self.root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
             rel_parts = directory.relative_to(self.root).parts
             if not self.include_hidden and any(part.startswith(".") for part in rel_parts):
                 continue
@@ -244,7 +138,7 @@ class _DesiredFile:
     md5: str
     folder: Path
     filename: str
-    content: str | None
+    content: str
 
 
 def _file_md5(path: Path) -> str:
@@ -273,10 +167,6 @@ def _dedupe_name(value: str, used: set[str]) -> str:
 
 def _is_md5(value: str) -> bool:
     return len(value) == 32 and all(c in "0123456789abcdefABCDEF" for c in value)
-
-
-def _looks_like_live_node(value: Any) -> bool:
-    return hasattr(value, "is_leaf") and (hasattr(value, "items") or hasattr(value, "children"))
 
 
 def _unique_path(target: Path, reserved: set[Path]) -> Path:
