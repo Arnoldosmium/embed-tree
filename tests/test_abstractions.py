@@ -63,6 +63,44 @@ def test_filesystem_loader_accepts_text_generator(tmp_path):
     assert leaf.metadata["filename"] == "intro.md"
 
 
+def test_filesystem_loader_accepts_additional_metadata_derivers(tmp_path):
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "intro.md").write_text("title: Getting Started\n\nbody", encoding="utf-8")
+
+    tree = FileSystemTreeLoader(
+        root,
+        include_suffixes=[".md"],
+        additional_metadata_derivers=[
+            lambda raw: {
+                "new_file_name": "draft.md",
+                "title": raw.splitlines()[0].removeprefix("title: "),
+            },
+            lambda raw: {
+                "new_file_name": raw.splitlines()[0].removeprefix("title: ").lower().replace(" ", "-") + ".md",
+                "tags": ["docs"],
+            },
+        ],
+    ).load()
+
+    assert tree is not None
+    leaf = _leaves(tree)[0]
+    assert leaf.id == hashlib.md5(b"title: Getting Started\n\nbody").hexdigest()
+    assert leaf.text == "title: Getting Started\n\nbody"
+    assert leaf.metadata["filename"] == "intro.md"
+    assert leaf.metadata["new_file_name"] == "getting-started.md"
+    assert leaf.metadata["title"] == "Getting Started"
+    assert leaf.metadata["tags"] == ["docs"]
+
+
+def test_filesystem_loader_rejects_single_additional_metadata_deriver(tmp_path):
+    with pytest.raises(TypeError, match="additional_metadata_derivers"):
+        FileSystemTreeLoader(
+            tmp_path,
+            additional_metadata_derivers=lambda raw: {"title": raw},
+        )
+
+
 def test_embed_tree_adds_branch(tmp_path):
     root = tmp_path / "docs"
     root.mkdir()

@@ -91,14 +91,17 @@ loader or the organized output from `EmbedTree.to_branch()`.
 
 For folder-based trees, `FileSystemTreeLoader` uses the file content MD5 as
 `id`. Its optional `text_generator(path, raw_text)` can derive the embed text
-from raw file text while preserving file identity. `FolderTreePersister` moves
-existing files only when a node has a content MD5 as its `id` or explicit MD5
-metadata and that MD5 exists under the current root. If no current file matches,
-path metadata can point to a source file to copy when its MD5 matches the same
-identity. If neither exists, `missing_node_file` controls the result: `"skip"`
-warns and skips by default, `"create"` writes a `.txt` snapshot containing
-`text` and `metadata`, and `"raise"` raises `MissingNodeFileError`.
-`new_file_name` can rename moved/copied files or snapshots.
+from raw file text while preserving file identity. Its optional
+`additional_metadata_derivers` is a list of callables that derive metadata such
+as `new_file_name` from file content; derived dictionaries are merged in order,
+with later keys winning. `FolderTreePersister` moves existing files only when a
+node has a content MD5 as its `id` or explicit MD5 metadata and that MD5 exists
+under the current root. If no current file matches, path metadata can point to a
+source file to copy when its MD5 matches the same identity. If neither exists,
+`missing_node_file` controls the result: `"skip"` warns and skips by default,
+`"create"` writes a `.txt` snapshot containing `text` and `metadata`, and
+`"raise"` raises `MissingNodeFileError`. `new_file_name` can rename moved/copied
+files or snapshots.
 
 `EmbedTree` has internal runtime nodes and content records which are not
 public API.

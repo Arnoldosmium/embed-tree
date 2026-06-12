@@ -80,8 +80,18 @@ FileSystemTreeLoader(
     "./docs",
     include_suffixes=[".md"],
     text_generator=lambda path, raw: raw.splitlines()[0],
+    additional_metadata_derivers=[
+        lambda raw: {"title": raw.splitlines()[0]},
+        lambda raw: {"new_file_name": "derived.md"},
+    ],
 )
 ```
+
+`additional_metadata_derivers` is a list of callables. Each callable receives
+raw file text and returns a metadata mapping. Mappings are merged in order with
+`|`, so later derivers override earlier keys. It is useful for fields such as
+`new_file_name`, tags, titles, or source-specific identifiers derived from file
+content.
 
 `FolderTreePersister` builds a current-folder MD5 map and moves existing files
 only when a node has a content MD5 as its `id` or explicit MD5 metadata such as

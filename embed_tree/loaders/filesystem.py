@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from embed_tree.representation import BranchNode, ContentNode
 
@@ -15,7 +15,8 @@ class FileSystemTreeLoader:
     File ContentNode.id is the file content MD5. Path fields are metadata only;
     they are used by persisters to plan moves when materializing a new tree. A
     text_generator can derive embed text from raw file text without changing
-    file identity.
+    file identity. additional_metadata_derivers is a list of callables that
+    derive fields such as new_file_name from raw file text.
     """
 
     def __init__(
@@ -26,12 +27,19 @@ class FileSystemTreeLoader:
         encoding: str = "utf-8",
         include_hidden: bool = False,
         text_generator: Callable[[Path, str], str] | None = None,
+        additional_metadata_derivers: Iterable[Callable[[str], Mapping[str, Any]]] | None = None,
     ) -> None:
+        if callable(additional_metadata_derivers):
+            raise TypeError("FileSystemTreeLoader additional_metadata_derivers must be an iterable of callables")
         self.root = Path(root)
         self.include_suffixes = None if include_suffixes is None else {s.lower() for s in include_suffixes}
         self.encoding = encoding
         self.include_hidden = include_hidden
         self.text_generator = text_generator
+        self.additional_metadata_derivers = list(additional_metadata_derivers or [])
+        for deriver in self.additional_metadata_derivers:
+            if not callable(deriver):
+                raise TypeError("FileSystemTreeLoader additional_metadata_derivers must contain callables")
 
     def load(self) -> BranchNode | None:
         if not self.root.exists():
@@ -59,16 +67,18 @@ class FileSystemTreeLoader:
                 continue
             text = self._text_for_file(child, raw_text)
             file_id = _file_md5(child)
+            metadata = {
+                "path": str(child),
+                "relative_path": rel,
+                "filename": child.name,
+                "version": file_id,
+            }
+            metadata |= self._additional_metadata_for_file(raw_text)
             branch.children.append(
                 ContentNode(
                     id=file_id,
                     text=text,
-                    metadata={
-                        "path": str(child),
-                        "relative_path": rel,
-                        "filename": child.name,
-                        "version": file_id,
-                    },
+                    metadata=metadata,
                 )
             )
         return branch
@@ -83,6 +93,15 @@ class FileSystemTreeLoader:
         if not isinstance(text, str):
             raise TypeError("FileSystemTreeLoader text_generator must return str")
         return text
+
+    def _additional_metadata_for_file(self, raw_text: str) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        for deriver in self.additional_metadata_derivers:
+            derived = deriver(raw_text)
+            if not isinstance(derived, Mapping):
+                raise TypeError("FileSystemTreeLoader additional_metadata_derivers must return mappings")
+            metadata |= dict(derived)
+        return metadata
 
 
 def _file_md5(path: Path) -> str:
