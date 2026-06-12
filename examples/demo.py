@@ -9,7 +9,7 @@ different ways rather than one sitting at the origin.
 
 import numpy as np
 
-from embed_tree import EmbedTree, FileTreeStore, TreeConfig
+from embed_tree import EmbedTree, JsonTreeLoader, TreeConfig
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
 
     tree = EmbedTree(
         embedder=embed,
-        store=FileTreeStore("./demo_tree.json"),
+        state=JsonTreeLoader("./demo_tree.json"),
         config=TreeConfig(leaf_capacity=15, max_branches=3),
     )
 

@@ -2,12 +2,12 @@
 
 import numpy as np
 
-from embed_tree import EmbedTree, FakeEmbeddingProvider, TreeConfig
-from embed_tree.store import NullTreeStore
+from embed_tree import EmbedTree, TreeConfig
+from tests.helpers import FakeTextEmbedder
 
 
 def test_add_batch_returns_ids_and_inserts():
-    tree = EmbedTree(embedder=FakeEmbeddingProvider(dim=16), config=TreeConfig(leaf_capacity=20, max_branches=4))
+    tree = EmbedTree(embedder=FakeTextEmbedder(dim=16), config=TreeConfig(leaf_capacity=20, max_branches=4))
     ids = tree.add_batch([f"doc-{i}" for i in range(50)])
     assert len(ids) == 50
     assert len(set(ids)) == 50
@@ -17,7 +17,7 @@ def test_add_batch_returns_ids_and_inserts():
 def test_add_batch_uses_single_backend_call():
     calls = {"n": 0}
 
-    class Counting(FakeEmbeddingProvider):
+    class Counting(FakeTextEmbedder):
         def _embed_batch(self, texts):
             calls["n"] += 1
             return super()._embed_batch(texts)
@@ -30,13 +30,16 @@ def test_add_batch_uses_single_backend_call():
 def test_add_batch_persists_once():
     saves = {"n": 0}
 
-    class CountingStore(NullTreeStore):
+    class CountingState:
+        def load(self):
+            return None
+
         def save(self, state):
             saves["n"] += 1
 
     tree = EmbedTree(
-        embedder=FakeEmbeddingProvider(dim=16),
-        store=CountingStore(),
+        embedder=FakeTextEmbedder(dim=16),
+        state=CountingState(),
         config=TreeConfig(leaf_capacity=100, max_branches=4),
     )
     tree.add_batch([f"doc-{i}" for i in range(40)])
@@ -44,7 +47,7 @@ def test_add_batch_persists_once():
 
 
 def test_add_batch_payload_and_id_alignment():
-    tree = EmbedTree(embedder=FakeEmbeddingProvider(dim=16), config=TreeConfig(leaf_capacity=100, max_branches=4))
+    tree = EmbedTree(embedder=FakeTextEmbedder(dim=16), config=TreeConfig(leaf_capacity=100, max_branches=4))
     ids = tree.add_batch(
         ["a", "b", "c"],
         item_ids=[10, 20, 30],
@@ -56,7 +59,7 @@ def test_add_batch_payload_and_id_alignment():
 
 
 def test_add_batch_accepts_string_item_ids():
-    tree = EmbedTree(embedder=FakeEmbeddingProvider(dim=16), config=TreeConfig(leaf_capacity=100, max_branches=4))
+    tree = EmbedTree(embedder=FakeTextEmbedder(dim=16), config=TreeConfig(leaf_capacity=100, max_branches=4))
     ids = tree.add_batch(["a", "b"], item_ids=["md5-a", "md5-b"])
 
     assert ids == ["md5-a", "md5-b"]

@@ -9,7 +9,6 @@ from embed_tree import (
     ContentNode,
     DefaultTreeReconciler,
     EmbedTree,
-    FakeEmbeddingProvider,
     FileSystemTreeLoader,
     FolderTreePersister,
     Item,
@@ -24,6 +23,7 @@ from embed_tree import (
     TreeEdge,
     TreeConfig,
 )
+from tests.helpers import FakeTextEmbedder
 
 
 def test_filesystem_loader_builds_partial_tree(tmp_path):
@@ -51,7 +51,7 @@ def test_embed_tree_adds_loader_content_nodes(tmp_path):
     assert loaded is not None
     intro_id = hashlib.md5(b"hello").hexdigest()
     tree = EmbedTree(
-        embedder=FakeEmbeddingProvider(dim=16),
+        embedder=FakeTextEmbedder(dim=16),
         config=TreeConfig(leaf_capacity=10, max_branches=2),
     )
 

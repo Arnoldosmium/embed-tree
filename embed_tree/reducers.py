@@ -1,4 +1,4 @@
-"""Dimensionality reducers (PCA) for embed-tree. See DESIGN.md §5.3.
+"""Dimensionality reducers (PCA) for embed-tree.
 
 A reducer maps a raw embedding (dim D) to the lower-dim vector (dim d) used for
 routing/clustering. It is JSON-serializable so the fitted projection survives a

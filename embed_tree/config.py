@@ -5,8 +5,8 @@ constructed explicitly and handed whole to `EmbedTree(config=...)`. It does
 **not** read environment variables — every value must be passed in code, so the
 configuration is always explicit and reproducible.
 
-See DESIGN.md §4/§5.3. M1 adds PCA dimensionality reduction (pca_dims) in two
-modes (freeze / incremental); see those sections for the rebalance contract.
+PCA dimensionality reduction can run in freeze or incremental mode; see the
+reducer implementations for the rebalance contract.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class RebalanceConfig(BaseModel):
-    """When/whether to rebuild the whole tree from its leaves (DESIGN.md §4)."""
+    """When/whether to rebuild the whole tree from its leaves."""
 
     enabled: bool = True
     every_n_inserts: int | None = 10_000  # auto-rebuild cadence; None disables
@@ -25,8 +25,8 @@ class RebalanceConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """How to auto-name taxonomy nodes (DESIGN.md §10). Provider "none" uses a
-    no-network keyword tagger; "openai" and "local" generate labels with an LLM.
+    """How to auto-name taxonomy nodes. Provider "none" uses a no-network
+    keyword labeler; "openai" and "local" generate labels with an LLM.
     """
 
     provider: Literal["none", "openai", "local"] = "none"
@@ -45,7 +45,7 @@ class TreeConfig(BaseModel):
 
     model_config = ConfigDict(protected_namespaces=())  # allow `model_args` name
 
-    # Defaults are tuned for a human-browsable taxonomy (DESIGN.md §10): a small
+    # Defaults are tuned for a human-browsable taxonomy: a small
     # fan-out and small leaves keep every level readable (<=5 sub-topics, <=10
     # items per leaf). Raise both for a large-scale retrieval index instead.
     max_branches: int = 5  # max sub-topics per level (k for KMeans)
@@ -56,7 +56,7 @@ class TreeConfig(BaseModel):
     # Euclidean (rank-equivalent on the unit sphere). Embeddings encode meaning
     # in direction, not magnitude, so there is no separate distance knob.
 
-    # --- PCA dimensionality reduction (M1; see DESIGN.md §5.3) -------------
+    # --- PCA dimensionality reduction -------------------------------------
     # Off by default: only worth it at scale (thousands+). At tens of items PCA
     # is meaningless (too few samples) and never reaches pca_warmup anyway.
     pca_dims: int | None = None  # None = no reduction (operate in raw space)

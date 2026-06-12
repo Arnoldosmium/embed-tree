@@ -5,7 +5,7 @@ import os
 import numpy as np
 import pytest
 
-from embed_tree import EmbedTree, FileTreeStore, TreeConfig
+from embed_tree import EmbedTree, JsonTreeLoader, TreeConfig
 
 
 def make_clustered_embedder(seed=0, dim=8, spread=0.05):
@@ -71,14 +71,14 @@ def test_persistence_round_trip(tmp_path):
     embed = make_clustered_embedder()
     cfg = TreeConfig(leaf_capacity=20, max_branches=5)
 
-    t1 = EmbedTree(embedder=embed, store=FileTreeStore(path), config=cfg)
+    t1 = EmbedTree(embedder=embed, state=JsonTreeLoader(path), config=cfg)
     for c in range(5):
         for i in range(40):
             t1.add((c, i), payload={"cluster": c})
     before = t1.query((3, 999), k=5)
 
     # Reload from disk into a fresh instance.
-    t2 = EmbedTree(embedder=embed, store=FileTreeStore(path), config=cfg)
+    t2 = EmbedTree(embedder=embed, state=JsonTreeLoader(path), config=cfg)
     assert len(t2) == 200
     after = t2.query((3, 999), k=5)
     assert [h[0] for h in before] == [h[0] for h in after]

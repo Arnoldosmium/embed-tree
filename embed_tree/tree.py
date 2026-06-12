@@ -1,15 +1,15 @@
-"""Core incremental hierarchical clustering tree. See DESIGN.md §5.
+"""Core incremental hierarchical clustering tree.
 
 Model:
   - Each content -> exactly one vector -> a unique leaf (strict tree, single
-    membership). See DESIGN.md §6.2.
+    membership).
   - A node caches an incremental centroid (vsum / count) for fast routing.
   - Incremental `add` routes a vector down to a leaf, then splits that leaf via
     KMeans once it exceeds leaf_capacity (fan-out = max_branches).
-  - `rebalance()` instead rebuilds a clean, balanced taxonomy top-down (divisive
-    clustering), and `label()` names every node — see DESIGN.md §10.
+  - `rebalance()` rebuilds a clean, balanced taxonomy top-down (divisive
+    clustering), and `label()` names every node.
 
-Vectors (DESIGN.md §5.3):
+Vectors:
   - Each item keeps its *raw* embedding (source of truth, kept only when PCA is
     active) and the *routing* vector used in the tree.
   - With pca_dims set, the routing vector is the PCA-reduced raw. Until the PCA
@@ -37,8 +37,8 @@ from sklearn.cluster import KMeans
 from .config import TreeConfig
 from .reducers import Reducer
 from .representation import ContentNode, PartialTree
-from .store import NullTreeStore, TreeState, TreeStore
-from .taggers import Tagger, make_tagger
+from .labelers import KeywordLabeler, LabelCandidate, LabelRequest, Labeler, LLMLabeler
+from .persisters import MaterializedTreeState
 
 Content = Any
 Vector = np.ndarray
@@ -79,22 +79,22 @@ class Node:
 class EmbedTree:
     """Out-of-the-box incremental embedding tree.
 
-    Inject an `embedder` (content -> vector) and optionally a `store`
-    (persistence). Everything else is driven by `config`.
+    Inject an `embedder` (content -> vector) and optionally `state`
+    persistence. Everything else is driven by `config`.
     """
 
     def __init__(
         self,
         embedder: Callable[[Content], Vector],
-        store: TreeStore | None = None,
         config: TreeConfig | None = None,
         *,
-        tagger: Tagger | None = None,  # cluster texts -> label; default from config.llm
+        state: Any | None = None,
+        labeler: Labeler | None = None,
     ) -> None:
         self.embedder = embedder
-        self.store = store or NullTreeStore()
+        self.state = state
         self.config = config or TreeConfig()
-        self._tagger = tagger  # overrides config.llm when set; see label()
+        self._labeler = labeler
 
         self.reducer: Reducer = Reducer.from_config(self.config)
         self._next_node_id = 0
@@ -104,7 +104,7 @@ class EmbedTree:
         self._pf_buf: list[Vector] = []  # raw vectors pending partial_fit (incremental)
         self._reset_tree()
 
-        snapshot = self.store.load()
+        snapshot = self._load_state()
         if snapshot is not None:
             self._restore(snapshot)
 
@@ -141,7 +141,7 @@ class EmbedTree:
     ) -> list[Hashable]:
         """Embed and insert many contents at once, then persist a single time.
 
-        Embedding goes through the provider's batch path (`embed_batch`) when
+        Embedding goes through the embedder's batch path (`embed_batch`) when
         available — one backend call instead of N — and the snapshot is written
         once at the end rather than per item.
         """
@@ -194,7 +194,7 @@ class EmbedTree:
         return self.add_nodes(tree.content_nodes)
 
     def _embed_many(self, contents: list[Content]) -> list[Vector]:
-        """Embed via the provider's batch API if it has one, else one by one."""
+        """Embed via the embedder's batch API if it has one, else one by one."""
         batch_fn = getattr(self.embedder, "embed_batch", None)
         if callable(batch_fn):
             return [np.asarray(v) for v in batch_fn(contents)]
@@ -207,7 +207,7 @@ class EmbedTree:
         if rb.enabled and rb.every_n_inserts and self._inserts_since_rebalance >= rb.every_n_inserts:
             self.rebalance()  # rebalance() persists
         else:
-            self.store.save(self.dump())
+            self._save_state()
 
     def query(self, content: Content, k: int = 10, *, exhaustive: bool = False) -> list[tuple[Hashable, float, Any]]:
         """Return up to k nearest items as (item_id, distance, payload).
@@ -234,14 +234,14 @@ class EmbedTree:
         """
         removed = self._remove(item_id)
         if removed:
-            self.store.save(self.dump())
+            self._save_state()
         return removed
 
     def remove_batch(self, item_ids: list[Hashable]) -> int:
         """Delete many items by id, persisting once. Returns the count removed."""
         n = sum(1 for iid in item_ids if self._remove(iid))
         if n:
-            self.store.save(self.dump())
+            self._save_state()
         return n
 
     def _remove(self, item_id: Hashable) -> bool:
@@ -288,7 +288,7 @@ class EmbedTree:
 
     def rebalance(self) -> None:
         """Rebuild a clean taxonomy from all items via top-down divisive
-        clustering (DESIGN.md §10), refitting PCA per the mode contract first.
+        clustering, refitting PCA per the mode contract first.
 
         Unlike incremental `add`, this produces a balanced hierarchy with
         <= max_branches children per node and <= leaf_capacity items per leaf.
@@ -297,7 +297,7 @@ class EmbedTree:
         if self.reducer.kind != "identity" and items:
             raws = np.stack([_raw_of(it) for it in items])
             if self.config.pca_mode == "freeze" or not self.reducer.is_fitted:
-                self.reducer.fit(raws)  # freeze: full refit (DESIGN.md §5.3)
+                self.reducer.fit(raws)  # freeze: full refit
             elif self._pf_buf:
                 self.reducer.partial_fit(np.stack(self._pf_buf))  # flush pending
         self._pf_buf = []
@@ -310,26 +310,26 @@ class EmbedTree:
         self._next_node_id = 0
         self.root = self._divisive(items) if items else self._empty_root()
         self._inserts_since_rebalance = 0
-        self.store.save(self.dump())
+        self._save_state()
 
-    def label(self, tagger: Tagger | None = None) -> None:
+    def label(self, labeler: Labeler | None = None) -> None:
         """Assign a human-readable label to every node from its members.
 
-        Uses the injected `tagger`, else the one built from `config.llm`
+        Uses the injected `labeler`, else the one built from `config.llm`
         (provider "none" => TF-IDF keywords). Decoupled from rebuild because an
-        LLM tagger is the expensive part. Call after rebalance() (or organize()).
+        LLM labeler is the expensive part. Call after rebalance() (or organize()).
         Labels are intentionally lazy: non-branching wrappers and their sole
         leaf child are left unlabeled because the browse output can inherit a
         readable title from the only child/item instead of paying for a gist.
         """
-        tagger = tagger or self._tagger or make_tagger(self.config.llm)
-        self._label_node(self.root, tagger, sibling_count=0)
-        self.store.save(self.dump())
+        labeler = labeler or self._labeler or self._make_labeler()
+        self._label_node(self.root, labeler, sibling_count=0)
+        self._save_state()
 
-    def organize(self, tagger: Tagger | None = None) -> None:
+    def organize(self, labeler: Labeler | None = None) -> None:
         """One call: rebuild the clean taxonomy and label every node."""
         self.rebalance()
-        self.label(tagger)
+        self.label(labeler)
 
     def to_dict(self, *, max_items: int = 5, collapse_single_leaf: bool = False) -> dict:
         """Export the tree as a human-readable nested dict for browsing."""
@@ -381,25 +381,34 @@ class EmbedTree:
 
     # ------------------------------------------------------------- labeling
 
-    def _label_node(self, node: Node, tagger: Tagger, *, sibling_count: int) -> None:
+    def _label_node(self, node: Node, labeler: Labeler, *, sibling_count: int) -> None:
         child_count = len(node.children or [])
         should_label = child_count > 1 or sibling_count > 1
         if should_label:
-            texts = self._representative_texts(node)
-            node.label = tagger(texts) if texts else None
+            candidates = self._label_candidates(node)
+            request = LabelRequest(candidates=candidates, max_words=self.config.llm.max_label_words)
+            node.label = labeler.label(request) if candidates else None
         else:
             node.label = None
         if not node.is_leaf:
             for child in node.children or []:
-                self._label_node(child, tagger, sibling_count=child_count)
+                self._label_node(child, labeler, sibling_count=child_count)
 
-    def _representative_texts(self, node: Node) -> list[str]:
+    def _label_candidates(self, node: Node) -> list[LabelCandidate]:
         items = [it for it in self._node_items(node) if it.text]
         if not items:
             return []
         c = node.centroid
         items.sort(key=lambda it: _dist(c, it.vector))  # closest to centroid first
-        return [it.text for it in items[: self.config.llm.max_samples]]  # type: ignore[misc]
+        return [
+            LabelCandidate(id=it.id, text=it.text or "", distance=_dist(c, it.vector), payload=it.payload)
+            for it in items[: self.config.llm.max_samples]
+        ]
+
+    def _make_labeler(self) -> Labeler:
+        if self.config.llm.provider == "none":
+            return KeywordLabeler()
+        return LLMLabeler(self.config.llm)
 
     # -------------------------------------------------------------- browsing
 
@@ -603,7 +612,7 @@ class EmbedTree:
 
     # --------------------------------------------------------- (de)serialize
 
-    def dump(self) -> TreeState:
+    def dump(self) -> MaterializedTreeState:
         return {
             "version": 2,
             "config": {"pca_mode": self.config.pca_mode},
@@ -615,7 +624,7 @@ class EmbedTree:
             "root": _node_to_dict(self.root),
         }
 
-    def _restore(self, state: TreeState) -> None:
+    def _restore(self, state: MaterializedTreeState) -> None:
         self._next_item_id = state.get("next_item_id", 0)
         self._inserts_since_rebalance = state.get("inserts_since_rebalance", 0)
         if "reducer" in state:
@@ -624,6 +633,15 @@ class EmbedTree:
         self._pf_buf = [np.asarray(v, dtype=np.float64) for v in state.get("pf_buf", [])]
         self._next_node_id = 0
         self.root = self._dict_to_node(state["root"])
+
+    def _load_state(self) -> MaterializedTreeState | None:
+        if self.state is None or not hasattr(self.state, "load"):
+            return None
+        return self.state.load()
+
+    def _save_state(self) -> None:
+        if self.state is not None and hasattr(self.state, "save"):
+            self.state.save(self.dump())
 
     def _dict_to_node(self, d: dict) -> Node:
         node = self._new_node()

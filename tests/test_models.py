@@ -63,7 +63,7 @@ def test_function_labeler_streams_user_function():
     assert labeler.label(req) == "auth session"
 
 
-def test_llm_labeler_wraps_existing_tagger_client():
+def test_llm_labeler_uses_injected_client():
     class Message:
         content = "Auth sessions"
 

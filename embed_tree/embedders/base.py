@@ -1,17 +1,4 @@
-"""Shared embedding-provider machinery.
-
-A provider turns content (text) into a vector. Concrete providers only need to
-implement `_embed_batch`; this base adds the engineering wrapper every real
-provider needs (see DESIGN.md note on §2):
-
-  - **batching**: callers can embed many texts in one backend call;
-  - **caching**: identical content is never re-embedded (or re-billed);
-  - **retry + backoff**: API calls inevitably 429/timeout;
-  - **optional normalize**: off by default — the tree already L2-normalizes for
-    cosine, so leave it off unless you use the provider standalone.
-
-A provider is callable, so it drops straight into `EmbedTree(embedder=provider)`.
-"""
+"""Shared text embedder machinery."""
 
 from __future__ import annotations
 
@@ -26,7 +13,9 @@ import numpy as np
 Vector = np.ndarray
 
 
-class EmbeddingProvider(ABC):
+class BaseTextEmbedder(ABC):
+    """Base class for text embedders with batching, cache, and retry."""
+
     def __init__(
         self,
         *,
@@ -40,24 +29,22 @@ class EmbeddingProvider(ABC):
         self.max_retries = max_retries
         self.backoff_base = backoff_base
 
-    # --- implement this in subclasses (no caching/retry needed here) -------
     @abstractmethod
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
         """Embed texts in order; return array of shape (len(texts), dim)."""
 
-    # --- public API --------------------------------------------------------
     def embed_batch(self, texts: Sequence[str]) -> np.ndarray:
         texts = list(texts)
         out: list[Vector | None] = [None] * len(texts)
         miss_idx: list[int] = []
         miss_txt: list[str] = []
-        for i, t in enumerate(texts):
-            cached = self._cache.get(t) if self._cache is not None else None
+        for i, text in enumerate(texts):
+            cached = self._cache.get(text) if self._cache is not None else None
             if cached is not None:
                 out[i] = cached
             else:
                 miss_idx.append(i)
-                miss_txt.append(t)
+                miss_txt.append(text)
 
         if miss_txt:
             vecs = self._post(self._with_retry(miss_txt))
@@ -71,14 +58,13 @@ class EmbeddingProvider(ABC):
     def embed(self, text: str) -> Vector:
         return self.embed_batch([text])[0]
 
-    def __call__(self, content: str) -> Vector:
-        return self.embed(content)
+    def __call__(self, text: str) -> Vector:
+        return self.embed(text)
 
     def cache_clear(self) -> None:
         if self._cache is not None:
             self._cache.clear()
 
-    # --- internals ---------------------------------------------------------
     def _post(self, vecs: np.ndarray) -> np.ndarray:
         vecs = np.asarray(vecs, dtype=np.float32)
         if self.normalize:
@@ -99,6 +85,6 @@ class EmbeddingProvider(ABC):
         raise AssertionError("unreachable")  # pragma: no cover
 
 
-def _stable_seed(text: str) -> int:
-    """Deterministic 32-bit seed from text (process-independent)."""
+def stable_text_seed(text: str) -> int:
+    """Deterministic 32-bit seed from text."""
     return int.from_bytes(hashlib.md5(text.encode("utf-8")).digest()[:4], "big")

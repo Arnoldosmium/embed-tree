@@ -1,17 +1,22 @@
-"""embed-tree: an incremental hierarchical clustering tree over embeddings.
-
-See DESIGN.md for the full design. Minimal usage:
-
-    from embed_tree import EmbedTree, TreeConfig, FileTreeStore
-
-    tree = EmbedTree(embedder=my_embed_fn, store=FileTreeStore("./tree.json"))
-    tree.add("some content")
-    hits = tree.query("similar content", k=5)
-"""
+"""embed-tree: a browsable hierarchy over content embeddings."""
 
 from .config import LLMConfig, RebalanceConfig, TreeConfig
-from .embedders import HuggingFaceTextEmbedder, TextEmbedder, embed_texts
-from .labelers import FunctionLabeler, LabelCandidate, Labeler, LabelRequest, LLMLabeler
+from .embedders import (
+    BaseTextEmbedder,
+    HuggingFaceTextEmbedder,
+    OpenAITextEmbedder,
+    TagSetEmbedder,
+    TextEmbedder,
+    embed_texts,
+)
+from .labelers import (
+    FunctionLabeler,
+    KeywordLabeler,
+    LabelCandidate,
+    Labeler,
+    LabelRequest,
+    LLMLabeler,
+)
 from .loaders import (
     FileSystemTreeLoader,
     JsonTreeLoader,
@@ -29,12 +34,6 @@ from .persisters import (
     TreePersister,
 )
 from .projectors import PCAConfig, PCAProjector, VectorProjector
-from .providers import (
-    EmbeddingProvider,
-    FakeEmbeddingProvider,
-    OpenAIEmbeddingProvider,
-    SentenceTransformerProvider,
-)
 from .reducers import (
     FreezePCAReducer,
     IdentityReducer,
@@ -55,8 +54,6 @@ from .representation import (
     partial_tree_from_dict,
     partial_tree_to_dict,
 )
-from .store import FileTreeStore, NullTreeStore, TreeState, TreeStore
-from .taggers import KeywordTagger, LLMTagger, Tagger, make_tagger
 from .tree import EmbedTree, Item, Node
 
 __all__ = [
@@ -67,7 +64,10 @@ __all__ = [
     "RebalanceConfig",
     "LLMConfig",
     "TextEmbedder",
+    "BaseTextEmbedder",
     "HuggingFaceTextEmbedder",
+    "OpenAITextEmbedder",
+    "TagSetEmbedder",
     "embed_texts",
     "PCAConfig",
     "PCAProjector",
@@ -76,6 +76,7 @@ __all__ = [
     "LabelRequest",
     "Labeler",
     "FunctionLabeler",
+    "KeywordLabeler",
     "LLMLabeler",
     "TreeLoader",
     "FileSystemTreeLoader",
@@ -102,20 +103,8 @@ __all__ = [
     "VectorData",
     "partial_tree_from_dict",
     "partial_tree_to_dict",
-    "TreeState",
-    "TreeStore",
-    "FileTreeStore",
-    "NullTreeStore",
-    "EmbeddingProvider",
-    "FakeEmbeddingProvider",
-    "OpenAIEmbeddingProvider",
-    "SentenceTransformerProvider",
     "Reducer",
     "IdentityReducer",
     "FreezePCAReducer",
     "IncrementalPCAReducer",
-    "Tagger",
-    "KeywordTagger",
-    "LLMTagger",
-    "make_tagger",
 ]

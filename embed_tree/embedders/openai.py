@@ -1,11 +1,4 @@
-"""OpenAI embedding adapter.
-
-Requires the optional `openai` extra:  pip install "embed-tree[openai]"
-
-Pass your (enterprise) key explicitly via `api_key`, or inject a pre-built
-`client`. If both are omitted the OpenAI SDK falls back to its own credential
-resolution.
-"""
+"""OpenAI text embeddings."""
 
 from __future__ import annotations
 
@@ -13,17 +6,17 @@ from typing import Any
 
 import numpy as np
 
-from .base import EmbeddingProvider
+from .base import BaseTextEmbedder
 
 
-class OpenAIEmbeddingProvider(EmbeddingProvider):
+class OpenAITextEmbedder(BaseTextEmbedder):
     def __init__(
         self,
         model: str = "text-embedding-3-small",
         *,
         api_key: str | None = None,
-        dimensions: int | None = None,  # shorten output (text-embedding-3-*)
-        client: Any | None = None,  # inject for testing / custom config
+        dimensions: int | None = None,
+        client: Any | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -32,7 +25,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 from openai import OpenAI
             except ImportError as e:  # pragma: no cover
                 raise ImportError(
-                    'OpenAIEmbeddingProvider needs the "openai" extra: '
+                    'OpenAITextEmbedder needs the "openai" extra: '
                     'pip install "embed-tree[openai]"'
                 ) from e
             client = OpenAI(api_key=api_key) if api_key else OpenAI()
@@ -45,5 +38,4 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         if self.dimensions is not None:
             kwargs["dimensions"] = self.dimensions
         resp = self.client.embeddings.create(**kwargs)
-        # OpenAI returns embeddings in input order.
         return np.asarray([d.embedding for d in resp.data], dtype=np.float32)

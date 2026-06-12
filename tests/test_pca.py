@@ -4,7 +4,7 @@ import os
 
 import numpy as np
 
-from embed_tree import EmbedTree, FileTreeStore, TreeConfig
+from embed_tree import EmbedTree, JsonTreeLoader, TreeConfig
 
 
 def make_highdim_embedder(seed=0, dim=64, n_clusters=5, spread=0.05):
@@ -103,11 +103,11 @@ def test_pca_persistence_round_trip(tmp_path):
     embed = make_highdim_embedder()
     cfg = TreeConfig(pca_dims=8, pca_mode="freeze", pca_warmup=60, leaf_capacity=20, max_branches=5, model_args={"random_state": 0})
 
-    t1 = EmbedTree(embedder=embed, store=FileTreeStore(path), config=cfg)
+    t1 = EmbedTree(embedder=embed, state=JsonTreeLoader(path), config=cfg)
     _fill(t1)
     before = t1.query((4, 999), k=5)
 
-    t2 = EmbedTree(embedder=embed, store=FileTreeStore(path), config=cfg)
+    t2 = EmbedTree(embedder=embed, state=JsonTreeLoader(path), config=cfg)
     assert len(t2) == 200
     assert t2.reducer.is_fitted
     after = t2.query((4, 999), k=5)
@@ -121,10 +121,10 @@ def test_incremental_persistence_resumes_partial_fit(tmp_path):
         pca_dims=8, pca_mode="incremental", pca_warmup=40, pca_batch_size=16,
         leaf_capacity=20, max_branches=5, model_args={"random_state": 0},
     )
-    t1 = EmbedTree(embedder=embed, store=FileTreeStore(path), config=cfg)
+    t1 = EmbedTree(embedder=embed, state=JsonTreeLoader(path), config=cfg)
     _fill(t1, per=20)
 
-    t2 = EmbedTree(embedder=embed, store=FileTreeStore(path), config=cfg)
+    t2 = EmbedTree(embedder=embed, state=JsonTreeLoader(path), config=cfg)
     n = len(t2)
     # Keep adding after reload -> partial_fit must resume without error.
     for i in range(100, 140):

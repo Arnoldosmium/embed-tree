@@ -5,7 +5,8 @@ from collections import Counter
 
 import numpy as np
 
-from embed_tree import EmbedTree, FakeEmbeddingProvider, FileTreeStore, TreeConfig
+from embed_tree import EmbedTree, FunctionLabeler, JsonTreeLoader, LabelRequest, TreeConfig
+from tests.helpers import FakeTextEmbedder
 
 TOPICS = ["animal", "language", "food"]
 BASES = {"animal": [1.0, 0.0, 0.0], "language": [0.0, 1.0, 0.0], "food": [0.0, 0.0, 1.0]}
@@ -26,8 +27,9 @@ def topic_of(text):
     return next(t for t in TOPICS if t in text)
 
 
-def topic_tagger(texts):
-    words = [topic_of(t) for t in texts if any(t2 in t for t2 in TOPICS)]
+def topic_labeler(request: LabelRequest) -> str:
+    texts = [candidate.text for candidate in request.candidates]
+    words = [topic_of(text) for text in texts if any(topic in text for topic in TOPICS)]
     return Counter(words).most_common(1)[0][0] if words else ""
 
 
@@ -54,7 +56,7 @@ def _invariants(node, cfg):
 
 def test_divisive_invariants_and_count():
     cfg = TreeConfig(max_branches=5, leaf_capacity=10, model_args={"random_state": 0})
-    tree = EmbedTree(embedder=FakeEmbeddingProvider(dim=12), config=cfg)
+    tree = EmbedTree(embedder=FakeTextEmbedder(dim=12), config=cfg)
     tree.add_batch([f"doc-{i}" for i in range(47)])
     tree.rebalance()
     assert len(tree) == 47
@@ -72,9 +74,9 @@ def test_leaves_are_topic_homogeneous():
         assert len(topics) == 1, topics  # clustering grouped one topic per leaf
 
 
-def test_labels_via_injected_tagger():
+def test_labels_via_injected_labeler():
     tree = build_topical_tree()
-    tree.organize(tagger=topic_tagger)
+    tree.organize(labeler=FunctionLabeler(topic_labeler))
     root = tree.get_tree()
     assert root.label in TOPICS  # root labeled with dominant topic
     leaf_labels = {leaf.label for leaf in root.children}
@@ -83,7 +85,7 @@ def test_labels_via_injected_tagger():
 
 def test_browse_dict_and_show():
     tree = build_topical_tree()
-    tree.organize(tagger=topic_tagger)
+    tree.organize(labeler=FunctionLabeler(topic_labeler))
 
     d = tree.to_dict(max_items=2)
     assert d["size"] == 30 and "children" in d
@@ -103,12 +105,12 @@ def test_single_leaf_branch_is_lazy_labeled_and_collapsible():
 
     calls = []
 
-    def counting_tagger(texts):
-        calls.append(texts)
+    def counting_labeler(request: LabelRequest) -> str:
+        calls.append(request)
         return "should not be used"
 
-    tree.label(tagger=counting_tagger)
-    assert calls == []  # no LLM/tagger call for a non-branching wrapper + sole leaf
+    tree.label(labeler=FunctionLabeler(counting_labeler))
+    assert calls == []  # no LLM/labeler call for a non-branching wrapper + sole leaf
 
     d = tree.to_dict(max_items=2, collapse_single_leaf=True)
     assert "items" in d and "children" not in d
@@ -124,18 +126,18 @@ def test_organize_persistence_keeps_labels(tmp_path):
     path = os.path.join(tmp_path, "tax.json")
     t1 = EmbedTree(
         embedder=topical_embedder(),
-        store=FileTreeStore(path),
+        state=JsonTreeLoader(path),
         config=TreeConfig(max_branches=3, leaf_capacity=10, model_args={"random_state": 0}),
     )
     for topic in TOPICS:
         for i in range(10):
             t1.add(f"{topic} note {i}")
-    t1.organize(tagger=topic_tagger)
+    t1.organize(labeler=FunctionLabeler(topic_labeler))
     labels_before = sorted(c.label for c in t1.get_tree().children)
 
     t2 = EmbedTree(
         embedder=topical_embedder(),
-        store=FileTreeStore(path),
+        state=JsonTreeLoader(path),
         config=TreeConfig(max_branches=3, leaf_capacity=10),
     )
     assert len(t2) == 30
@@ -143,8 +145,8 @@ def test_organize_persistence_keeps_labels(tmp_path):
     assert labels_before == labels_after  # labels survived reload
 
 
-def test_keyword_tagger_default_when_no_llm():
-    # No tagger injected, provider "none" -> KeywordTagger names nodes.
+def test_keyword_labeler_default_when_no_llm():
+    # No labeler injected, provider "none" -> KeywordLabeler names nodes.
     tree = build_topical_tree()
     tree.organize()  # uses config.llm (provider none) -> TF-IDF
     for leaf in tree.get_tree().children:

@@ -71,7 +71,7 @@ class PartialTree:
 
     ``content_nodes`` are the only required source records. Everything else is
     optional reusable state: shape, embeddings, labels, aggregates, reducer
-    state, or provider-specific metadata.
+    state, or implementation-specific metadata.
     """
 
     content_nodes: list[ContentNode] = field(default_factory=list)

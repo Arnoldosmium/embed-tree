@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from embed_tree.providers.local import SentenceTransformerProvider
+from .base import BaseTextEmbedder
 
 
-class HuggingFaceTextEmbedder(SentenceTransformerProvider):
+class HuggingFaceTextEmbedder(BaseTextEmbedder):
     """Sentence-transformers embedder with Mac-friendly device selection.
 
     The model is downloaded from Hugging Face by sentence-transformers on first
@@ -23,15 +22,16 @@ class HuggingFaceTextEmbedder(SentenceTransformerProvider):
         model: str = "BAAI/bge-small-en-v1.5",
         *,
         device: str | None = "auto",
-        cache_folder: str | Path | None = None,
+        cache_folder: str | None = None,
         model_obj: Any | None = None,
         encode_kwargs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
+        super().__init__(**kwargs)
         resolved_device = _resolve_device(device)
         self.model_name = model
         self.device = resolved_device
-        self.cache_folder = None if cache_folder is None else str(cache_folder)
+        self.cache_folder = cache_folder
         if model_obj is None:
             try:
                 from sentence_transformers import SentenceTransformer
@@ -41,9 +41,12 @@ class HuggingFaceTextEmbedder(SentenceTransformerProvider):
                     'pip install "embed-tree[local]"'
                 ) from e
             model_obj = SentenceTransformer(model, device=resolved_device, cache_folder=self.cache_folder)
-            super().__init__(model=model, device=resolved_device, model_obj=model_obj, encode_kwargs=encode_kwargs, **kwargs)
-        else:
-            super().__init__(model=model, device=resolved_device, model_obj=model_obj, encode_kwargs=encode_kwargs, **kwargs)
+        self.model = model_obj
+        self.encode_kwargs = encode_kwargs or {}
+
+    def _embed_batch(self, texts: list[str]) -> np.ndarray:
+        vecs = self.model.encode(texts, convert_to_numpy=True, **self.encode_kwargs)
+        return np.asarray(vecs, dtype=np.float32)
 
 
 def _resolve_device(device: str | None) -> str | None:
@@ -66,4 +69,3 @@ def embed_texts(embedder: Any, texts: list[str]) -> np.ndarray:
     if callable(batch_fn):
         return np.asarray(batch_fn(texts))
     return np.asarray([embedder(text) for text in texts])
-
