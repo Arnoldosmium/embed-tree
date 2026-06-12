@@ -5,7 +5,7 @@
 The public model is intentionally small:
 
 ```python
-ContentNode(id, text, metadata={})
+ContentNode(id=..., text=..., metadata={...})
 BranchNode(id, label=None, children=[])
 EmbedTree(embedder, config=None, state=None, labeler=None)
 ```
@@ -33,10 +33,10 @@ pip install "embed-tree[sql]"
 from embed_tree import ContentNode, EmbedTree, TagSetEmbedder, TreeConfig
 
 nodes = [
-    ContentNode("doc-1", "import pipeline docs", {"tags": ["docs", "ingest"]}),
-    ContentNode("doc-2", "retry handling for ingestion", {"tags": ["ingest"]}),
-    ContentNode("doc-3", "summary generation latency", {"tags": ["analysis"]}),
-    ContentNode("doc-4", "schema mapping examples", {"tags": ["docs", "schemas"]}),
+    ContentNode(id="doc-1", text="import pipeline docs", metadata={"tags": ["docs", "ingest"]}),
+    ContentNode(id="doc-2", text="retry handling for ingestion", metadata={"tags": ["ingest"]}),
+    ContentNode(id="doc-3", text="summary generation latency", metadata={"tags": ["analysis"]}),
+    ContentNode(id="doc-4", text="schema mapping examples", metadata={"tags": ["docs", "schemas"]}),
 ]
 
 tree = EmbedTree(
@@ -45,7 +45,7 @@ tree = EmbedTree(
 )
 
 tree.add_nodes(nodes)
-tree.organize()
+tree.organize()  # rebalance the hierarchy, then label each branch
 
 print(tree.show())
 branch = tree.to_branch()
@@ -57,7 +57,13 @@ Use a real text embedder in production:
 from embed_tree import ContentNode, EmbedTree, OpenAITextEmbedder
 
 tree = EmbedTree(OpenAITextEmbedder(model="text-embedding-3-small", api_key="..."))
-tree.add_node(ContentNode("doc-1", "Some document summary", {"source": "docs"}))
+tree.add_node(
+    ContentNode(
+        id="doc-1",
+        text="Some document summary",
+        metadata={"source": "docs"},
+    )
+)
 ```
 
 ## Core API
@@ -73,7 +79,7 @@ tree.remove_batch([node_id])
 
 tree.rebalance()
 tree.label(labeler=None)
-tree.organize(labeler=None)
+tree.organize(labeler=None) # rebalance + re-label
 
 tree.to_branch(max_items=None)
 tree.show(max_items=3)
@@ -83,7 +89,7 @@ len(tree)
 `BranchNode` is the public tree shape. It can represent an input branch from a
 loader or the organized output from `EmbedTree.to_branch()`.
 
-`EmbedTree` has internal runtime nodes and content records, but they are not
+`EmbedTree` has internal runtime nodes and content records which are not
 public API.
 
 ## Persistence
