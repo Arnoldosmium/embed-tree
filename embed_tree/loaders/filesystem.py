@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from embed_tree.representation import BranchNode, ContentNode
 
 
 class FileSystemTreeLoader:
-    """Load files under a directory as a recursive BranchNode tree."""
+    """Load files under a directory as a recursive BranchNode tree.
+
+    File ContentNode.id is the file content MD5. Path fields are metadata only;
+    they are used by persisters to plan moves when materializing a new tree. A
+    text_generator can derive embed text from raw file text without changing
+    file identity.
+    """
 
     def __init__(
         self,
@@ -19,11 +25,13 @@ class FileSystemTreeLoader:
         include_suffixes: Iterable[str] | None = None,
         encoding: str = "utf-8",
         include_hidden: bool = False,
+        text_generator: Callable[[Path, str], str] | None = None,
     ) -> None:
         self.root = Path(root)
         self.include_suffixes = None if include_suffixes is None else {s.lower() for s in include_suffixes}
         self.encoding = encoding
         self.include_hidden = include_hidden
+        self.text_generator = text_generator
 
     def load(self) -> BranchNode | None:
         if not self.root.exists():
@@ -46,9 +54,10 @@ class FileSystemTreeLoader:
             if not child.is_file() or not self._included(child):
                 continue
             try:
-                text = child.read_text(encoding=self.encoding)
+                raw_text = child.read_text(encoding=self.encoding)
             except UnicodeDecodeError:
                 continue
+            text = self._text_for_file(child, raw_text)
             file_id = _file_md5(child)
             branch.children.append(
                 ContentNode(
@@ -66,6 +75,14 @@ class FileSystemTreeLoader:
 
     def _included(self, path: Path) -> bool:
         return self.include_suffixes is None or path.suffix.lower() in self.include_suffixes
+
+    def _text_for_file(self, path: Path, raw_text: str) -> str:
+        if self.text_generator is None:
+            return raw_text
+        text = self.text_generator(path, raw_text)
+        if not isinstance(text, str):
+            raise TypeError("FileSystemTreeLoader text_generator must return str")
+        return text
 
 
 def _file_md5(path: Path) -> str:

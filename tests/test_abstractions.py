@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+
+import pytest
 
 from embed_tree import (
     BranchNode,
@@ -10,6 +13,7 @@ from embed_tree import (
     FileSystemTreeLoader,
     FolderTreePersister,
     JsonTreeLoader,
+    MissingNodeFileError,
     SQLAlchemyContentLoader,
     SQLAlchemyTreePersister,
     SQLiteTreeLoader,
@@ -29,10 +33,34 @@ def test_filesystem_loader_builds_branch_tree(tmp_path):
     assert isinstance(tree, BranchNode)
     assert tree.label == "docs"
     assert tree.count == 2
-    assert {node.id for node in _leaves(tree)} == {
+    leaves = _leaves(tree)
+    assert {node.id for node in leaves} == {
         hashlib.md5(b"hello").hexdigest(),
         hashlib.md5(b"install").hexdigest(),
     }
+    by_name = {node.metadata["filename"]: node for node in leaves}
+    assert by_name["intro.md"].metadata["path"] == str(root / "intro.md")
+    assert by_name["intro.md"].metadata["relative_path"] == "intro.md"
+    assert by_name["setup.md"].metadata["path"] == str(root / "guides" / "setup.md")
+    assert by_name["setup.md"].metadata["relative_path"] == "guides/setup.md"
+
+
+def test_filesystem_loader_accepts_text_generator(tmp_path):
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "intro.md").write_text("# Intro\n\nbody text", encoding="utf-8")
+
+    tree = FileSystemTreeLoader(
+        root,
+        include_suffixes=[".md"],
+        text_generator=lambda path, raw: raw.splitlines()[0].lstrip("# "),
+    ).load()
+
+    assert tree is not None
+    leaf = _leaves(tree)[0]
+    assert leaf.id == hashlib.md5(b"# Intro\n\nbody text").hexdigest()
+    assert leaf.text == "Intro"
+    assert leaf.metadata["filename"] == "intro.md"
 
 
 def test_embed_tree_adds_branch(tmp_path):
@@ -67,10 +95,168 @@ def test_folder_tree_persister_materializes_branch(tmp_path):
         ],
     )
 
-    FolderTreePersister(root, include_suffixes=[".md"]).save(tree)
+    FolderTreePersister(root, include_suffixes=[".md"], missing_node_file="create").save(tree)
 
-    assert (root / "Topic One" / "alpha.md").read_text(encoding="utf-8") == "alpha"
-    assert (root / "Topic One" / "beta.md").read_text(encoding="utf-8") == "beta"
+    alpha = json.loads((root / "Topic One" / "alpha.txt").read_text(encoding="utf-8"))
+    beta = json.loads((root / "Topic One" / "beta.txt").read_text(encoding="utf-8"))
+    assert alpha == {
+        "text": "alpha",
+        "metadata": {"filename": "alpha.md", "content": "alpha"},
+    }
+    assert beta == {
+        "text": "beta",
+        "metadata": {"filename": "beta.md", "content": "beta"},
+    }
+
+
+def test_folder_tree_persister_moves_by_md5_and_can_rename(tmp_path):
+    root = tmp_path / "docs"
+    (root / "old").mkdir(parents=True)
+    (root / "old" / "alpha.md").write_text("alpha", encoding="utf-8")
+    alpha_id = hashlib.md5(b"alpha").hexdigest()
+    tree = BranchNode(
+        id="root",
+        children=[
+            BranchNode(
+                id="topic",
+                label="New Topic",
+                children=[
+                    ContentNode(
+                        id=alpha_id,
+                        text="alpha",
+                        metadata={
+                            "relative_path": "old/alpha.md",
+                            "filename": "alpha.md",
+                            "new_file_name": "renamed.md",
+                        },
+                    )
+                ],
+            )
+        ],
+    )
+
+    FolderTreePersister(root, include_suffixes=[".md"], missing_node_file="create").save(tree)
+
+    assert not (root / "old" / "alpha.md").exists()
+    assert (root / "New Topic" / "renamed.md").read_text(encoding="utf-8") == "alpha"
+
+
+def test_folder_tree_persister_copies_from_metadata_path_when_md5_matches(tmp_path):
+    root = tmp_path / "docs"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = source_dir / "alpha.md"
+    source.write_text("alpha", encoding="utf-8")
+    alpha_id = hashlib.md5(b"alpha").hexdigest()
+    tree = BranchNode(
+        id="root",
+        children=[
+            BranchNode(
+                id="topic",
+                label="Copied Topic",
+                children=[
+                    ContentNode(
+                        id=alpha_id,
+                        text="summary",
+                        metadata={
+                            "path": str(source),
+                            "new_file_name": "copied.md",
+                        },
+                    )
+                ],
+            )
+        ],
+    )
+
+    FolderTreePersister(root, include_suffixes=[".md"], missing_node_file="create").save(tree)
+
+    assert source.read_text(encoding="utf-8") == "alpha"
+    assert (root / "Copied Topic" / "copied.md").read_text(encoding="utf-8") == "alpha"
+
+
+def test_folder_tree_persister_snapshots_when_metadata_path_md5_differs(tmp_path):
+    root = tmp_path / "docs"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = source_dir / "alpha.md"
+    source.write_text("different", encoding="utf-8")
+    alpha_id = hashlib.md5(b"alpha").hexdigest()
+    tree = BranchNode(
+        id="root",
+        children=[
+            ContentNode(
+                id=alpha_id,
+                text="summary",
+                metadata={
+                    "path": str(source),
+                    "filename": "alpha.md",
+                },
+            )
+        ],
+    )
+
+    FolderTreePersister(root, include_suffixes=[".md"], missing_node_file="create").save(tree)
+
+    assert source.read_text(encoding="utf-8") == "different"
+    snapshot = json.loads((root / "alpha.txt").read_text(encoding="utf-8"))
+    assert snapshot == {
+        "text": "summary",
+        "metadata": {
+            "path": str(source),
+            "filename": "alpha.md",
+        },
+    }
+
+
+def test_folder_tree_persister_writes_generic_node_as_new_file(tmp_path):
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "alpha.md").write_text("alpha", encoding="utf-8")
+    tree = BranchNode(
+        id="root",
+        children=[
+            ContentNode(
+                id="generic-alpha",
+                text="alpha",
+                metadata={
+                    "relative_path": "alpha.md",
+                    "filename": "alpha.md",
+                },
+            )
+        ],
+    )
+
+    FolderTreePersister(root, include_suffixes=[".md"], missing_node_file="create").save(tree)
+
+    assert (root / "alpha.md").read_text(encoding="utf-8") == "alpha"
+    snapshot = json.loads((root / "alpha.txt").read_text(encoding="utf-8"))
+    assert snapshot == {
+        "text": "alpha",
+        "metadata": {
+            "relative_path": "alpha.md",
+            "filename": "alpha.md",
+        },
+    }
+
+
+def test_folder_tree_persister_skips_missing_node_file_by_default(tmp_path):
+    root = tmp_path / "docs"
+    tree = BranchNode(id="root", children=[ContentNode(id="generic-alpha", text="alpha", metadata={"filename": "alpha.md"})])
+
+    with pytest.warns(RuntimeWarning, match="skipping"):
+        FolderTreePersister(root, include_suffixes=[".md"]).save(tree)
+
+    assert not (root / "alpha.txt").exists()
+
+
+def test_folder_tree_persister_raises_for_missing_node_file(tmp_path):
+    root = tmp_path / "docs"
+    tree = BranchNode(id="root", children=[ContentNode(id="generic-alpha", text="alpha", metadata={"filename": "alpha.md"})])
+
+    with pytest.raises(MissingNodeFileError):
+        FolderTreePersister(root, include_suffixes=[".md"], missing_node_file="raise").save(tree)
+
+    assert not (root / "alpha.txt").exists()
 
 
 def test_json_tree_loader_persists_branch_round_trip(tmp_path):

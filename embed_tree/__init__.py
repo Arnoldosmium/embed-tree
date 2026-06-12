@@ -30,6 +30,7 @@ from .persisters import (
     FolderTreePersister,
     JsonTreePersister,
     MaterializedTreeState,
+    MissingNodeFileError,
     SQLAlchemyTreePersister,
     TreePersister,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "TreePersister",
     "FolderTreePersister",
     "FileSystemTreePersister",
+    "MissingNodeFileError",
     "JsonTreePersister",
     "SQLAlchemyTreePersister",
     "DefaultTreeRepresentation",

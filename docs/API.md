@@ -69,6 +69,37 @@ len(tree)
 
 `to_branch()` returns the public recursive tree shape.
 
+## Folder Trees
+
+`FileSystemTreeLoader` uses file content MD5 as each file `ContentNode.id`.
+It also stores `path`, `relative_path`, `filename`, and `version` in metadata.
+Pass `text_generator=callable` to derive `ContentNode.text` from raw file text:
+
+```python
+FileSystemTreeLoader(
+    "./docs",
+    include_suffixes=[".md"],
+    text_generator=lambda path, raw: raw.splitlines()[0],
+)
+```
+
+`FolderTreePersister` builds a current-folder MD5 map and moves existing files
+only when a node has a content MD5 as its `id` or explicit MD5 metadata such as
+`md5`, `file_md5`, `content_md5`, or `content_id`. If no current file matches,
+`path`, `relative_path`, or `source_path` metadata can point to a source file to
+copy when its MD5 matches the same identity.
+
+When neither move nor copy is possible, `missing_node_file` controls behavior:
+
+```python
+FolderTreePersister("./docs", missing_node_file="skip")   # default: warn + skip
+FolderTreePersister("./docs", missing_node_file="create") # write .txt snapshot
+FolderTreePersister("./docs", missing_node_file="raise")  # raise MissingNodeFileError
+```
+
+Created snapshots contain `text` and `metadata`. Set
+`metadata["new_file_name"]` to rename a moved/copied file or snapshot.
+
 ## Embedders
 
 ```python
