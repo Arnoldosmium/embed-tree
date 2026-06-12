@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "embed-tree"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Incremental hierarchical clustering tree over content embeddings"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,3 +31,7 @@ packages = [
     "embed_tree.reconcilers",
     "embed_tree.representation",
 ]
+
+[tool.setuptools_scm]
+version_scheme = "only-version"
+local_scheme = "no-local-version"
