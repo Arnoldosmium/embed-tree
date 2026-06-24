@@ -5,7 +5,7 @@ Model:
     membership).
   - A node caches an incremental centroid (vsum / count) for fast routing.
   - Incremental `add` routes a vector down to a leaf, then asks the configured
-    split strategy whether/how to split once the leaf exceeds leaf_capacity.
+    split strategy whether/how to split once the leaf exceeds leaf_target.
   - `rebalance()` rebuilds a clean taxonomy top-down (divisive clustering),
     and `label()` names every node.
 
@@ -263,7 +263,7 @@ class EmbedTree:
             it.raw = None if self.reducer.kind == "identity" else _raw_of(it)
 
         self._next_node_id = 0
-        self.root = self._divisive(items) if items else self._empty_root()
+        self.root = self._divisive(items, depth=0) if items else self._empty_root()
         self._inserts_since_rebalance = 0
         self._save_state()
 
@@ -301,20 +301,20 @@ class EmbedTree:
 
     # --------------------------------------------------------- taxonomy build
 
-    def _divisive(self, items: list[_StoredContent]) -> _TreeNode:
+    def _divisive(self, items: list[_StoredContent], *, depth: int) -> _TreeNode:
         """Recursively split items using the configured split strategy."""
         node = self._new_node()
         vecs = np.stack([it.vector for it in items])
         node.vsum = vecs.sum(axis=0)
         node.count = len(items)
 
-        decision = self._splitter.split(items)
+        decision = self._splitter.split(items, depth=depth)
         if not decision.should_split:
             node.items = items
             node.unsplittable = decision.reason == "unsplittable"
             return node
 
-        node.children = [self._divisive(cluster) for cluster in decision.clusters]
+        node.children = [self._divisive(cluster, depth=depth + 1) for cluster in decision.clusters]
         return node
 
     def _empty_root(self) -> _TreeNode:
@@ -472,14 +472,14 @@ class EmbedTree:
             node.count += 1
         leaf = path[-1]
         leaf.items.append(item)  # type: ignore[union-attr]
-        if not leaf.unsplittable and len(leaf.items) > self.config.leaf_capacity:  # type: ignore[arg-type]
-            self._split(leaf)
+        if not leaf.unsplittable and len(leaf.items) > self.config.leaf_target:  # type: ignore[arg-type]
+            self._split(leaf, depth=len(path) - 1)
 
     # --------------------------------------------------------------- splitting
 
-    def _split(self, leaf: _TreeNode) -> None:
+    def _split(self, leaf: _TreeNode, *, depth: int) -> None:
         items = leaf.items or []
-        decision = self._splitter.split(items)
+        decision = self._splitter.split(items, depth=depth)
         if not decision.should_split:
             leaf.unsplittable = decision.reason == "unsplittable"
             return
@@ -496,8 +496,8 @@ class EmbedTree:
         leaf.children = children
         # KMeans can produce uneven clusters; keep splitting oversized children.
         for child in children:
-            if len(child.items) > self.config.leaf_capacity:  # type: ignore[arg-type]
-                self._split(child)
+            if len(child.items) > self.config.leaf_target:  # type: ignore[arg-type]
+                self._split(child, depth=depth + 1)
 
     # ----------------------------------------------------------------- helpers
 

@@ -43,23 +43,24 @@ class TreeConfig(BaseModel):
     Constructed in code only — no environment-variable loading.
     """
 
-    model_config = ConfigDict(protected_namespaces=())  # allow `model_args` name
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())  # allow `model_args` name
 
     # Defaults are tuned for a human-browsable taxonomy: a small
     # fan-out and small leaves keep every level readable (<=5 sub-topics, <=10
     # items per leaf). Raise both for a large-scale retrieval index instead.
     max_branches: int = 5  # max sub-topics per level (k for KMeans)
-    leaf_capacity: int = 10  # max items in a leaf before it subdivides
+    leaf_target: int = 10  # target max items in a leaf before split is attempted
     split_algo: str = "kmeans"  # M0: "kmeans" only
     split_mode: Literal["fixed", "adaptive"] = "fixed"
 
     # Adaptive split mode treats max_branches as a hard upper bound, then picks
     # the best supported k only when a split materially improves cohesion.
     log_split_decisions: bool = False
-    min_samples_to_split: int = 8
     min_cluster_size: int = 2
     min_parent_dispersion: float = 0.08
+    parent_dispersion_decay: float = 1.0
     min_split_gain: float = 0.05
+    min_split_gain_ratio: float | None = None
     separation_weight: float = 0.05
     imbalance_weight: float = 0.05
 
@@ -79,11 +80,50 @@ class TreeConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)  # node auto-naming
     model_args: dict = Field(default_factory=dict)  # passed through to KMeans
 
+    @property
+    def leaf_capacity(self) -> int:
+        """Deprecated alias for leaf_target."""
+        return self.leaf_target
+
+    @property
+    def min_samples_to_split(self) -> int:
+        """Deprecated alias for leaf_target."""
+        return self.leaf_target
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_leaf_target_aliases(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+
+        values = dict(data)
+        if "leaf_target" in values:
+            return values
+
+        # Backward compatibility:
+        # - fixed mode used leaf_capacity as the split threshold;
+        # - adaptive mode used min_samples_to_split as the split threshold.
+        split_mode = values.get("split_mode", "fixed")
+        if split_mode == "adaptive" and "min_samples_to_split" in values:
+            values["leaf_target"] = values["min_samples_to_split"]
+        elif "leaf_capacity" in values:
+            values["leaf_target"] = values["leaf_capacity"]
+        elif "min_samples_to_split" in values:
+            values["leaf_target"] = values["min_samples_to_split"]
+        return values
+
     @field_validator("max_branches")
     @classmethod
     def _min_branches(cls, v: int) -> int:
         if v < 2:
             raise ValueError("max_branches must be >= 2")
+        return v
+
+    @field_validator("leaf_target")
+    @classmethod
+    def _positive_leaf_target(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("leaf_target must be >= 1")
         return v
 
     @field_validator("split_algo")
@@ -96,24 +136,35 @@ class TreeConfig(BaseModel):
             )
         return v
 
-    @field_validator("min_samples_to_split", "min_cluster_size")
+    @field_validator("min_cluster_size")
     @classmethod
     def _positive_int(cls, v: int) -> int:
         if v < 1:
             raise ValueError("adaptive split integer thresholds must be >= 1")
         return v
 
-    @field_validator("min_parent_dispersion", "min_split_gain", "separation_weight", "imbalance_weight")
+    @field_validator(
+        "min_parent_dispersion",
+        "min_split_gain",
+        "min_split_gain_ratio",
+        "separation_weight",
+        "imbalance_weight",
+    )
     @classmethod
-    def _nonnegative_float(cls, v: float) -> float:
-        if v < 0:
+    def _nonnegative_float(cls, v: float | None) -> float | None:
+        if v is not None and v < 0:
             raise ValueError("adaptive split score thresholds/weights must be >= 0")
+        return v
+
+    @field_validator("parent_dispersion_decay")
+    @classmethod
+    def _decay_factor(cls, v: float) -> float:
+        if not 0 <= v <= 1:
+            raise ValueError("parent_dispersion_decay must be between 0 and 1")
         return v
 
     @model_validator(mode="after")
     def _cross_field(self) -> "TreeConfig":
-        if self.split_mode == "fixed" and self.leaf_capacity < self.max_branches:
-            raise ValueError("leaf_capacity must be >= max_branches when split_mode='fixed'")
         if self.pca_dims is not None:
             if self.pca_dims < 2:
                 raise ValueError("pca_dims must be >= 2")

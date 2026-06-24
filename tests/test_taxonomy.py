@@ -47,7 +47,7 @@ def build_topical_tree(per=10):
 
 def _invariants(node, cfg):
     if node.is_leaf:
-        assert len(node.items or []) <= cfg.leaf_capacity or node.unsplittable
+        assert len(node.items or []) <= cfg.leaf_target or node.unsplittable
     else:
         assert len(node.children) <= cfg.max_branches
         assert len(node.children) >= 2
@@ -75,7 +75,7 @@ def test_leaves_are_topic_homogeneous():
         assert len(topics) == 1, topics  # clustering grouped one topic per leaf
 
 
-def test_adaptive_rebalance_discovers_natural_branches_without_capacity_pressure():
+def test_adaptive_rebalance_discovers_natural_branches():
     def embed(text):
         return np.array(BASES[topic_of(text)])
 
@@ -84,8 +84,7 @@ def test_adaptive_rebalance_discovers_natural_branches_without_capacity_pressure
         config=TreeConfig(
             split_mode="adaptive",
             max_branches=5,
-            leaf_capacity=100,
-            min_samples_to_split=6,
+            leaf_target=6,
             min_cluster_size=3,
             min_split_gain=0.01,
             model_args={"random_state": 0},
@@ -95,7 +94,6 @@ def test_adaptive_rebalance_discovers_natural_branches_without_capacity_pressure
         for i in range(10):
             tree.add_node(ContentNode(f"{topic}:{i}", f"{topic} note {i}"))
 
-    assert tree.root.is_leaf  # add() has no capacity pressure here
     tree.rebalance()
 
     assert not tree.root.is_leaf
@@ -114,8 +112,7 @@ def test_adaptive_rebalance_keeps_coherent_large_branch_together():
         config=TreeConfig(
             split_mode="adaptive",
             max_branches=5,
-            leaf_capacity=10,
-            min_samples_to_split=6,
+            leaf_target=6,
             min_parent_dispersion=0.01,
             model_args={"random_state": 0},
         ),
@@ -139,8 +136,7 @@ def test_adaptive_split_verbose_logs_decision_details(caplog):
             split_mode="adaptive",
             log_split_decisions=True,
             max_branches=3,
-            leaf_capacity=100,
-            min_samples_to_split=6,
+            leaf_target=6,
             min_cluster_size=3,
             min_split_gain=0.01,
             model_args={"random_state": 0},
@@ -157,7 +153,79 @@ def test_adaptive_split_verbose_logs_decision_details(caplog):
     assert "split.adaptive.accept" in caplog.text
     assert "parent_dispersion=" in caplog.text
     assert "gain=" in caplog.text
+    assert "gain_ratio=" in caplog.text
+    assert "depth=" in caplog.text
     assert "sizes=" in caplog.text
+
+
+def test_adaptive_parent_dispersion_decay_allows_deeper_splits():
+    vectors = {}
+    for top in ("a", "b"):
+        for sub in ("x", "y"):
+            for i in range(8):
+                if top == "a":
+                    vector = np.array([1.0, 0.12 if sub == "x" else -0.12, 0.0, 0.0])
+                else:
+                    vector = np.array([0.0, 1.0, 0.0, 0.12 if sub == "x" else -0.12])
+                vectors[f"{top}:{sub}:{i}"] = vector
+
+    def embed(text):
+        return vectors[text]
+
+    base = dict(
+        split_mode="adaptive",
+        leaf_target=4,
+        max_branches=2,
+        min_cluster_size=2,
+        min_parent_dispersion=0.15,
+        min_split_gain=0.0,
+        model_args={"random_state": 0},
+    )
+    flat = EmbedTree(embedder=embed, config=TreeConfig(**base))
+    decayed = EmbedTree(embedder=embed, config=TreeConfig(**base, parent_dispersion_decay=0.7))
+    for key in vectors:
+        node = ContentNode(key, key)
+        flat.add_node(node)
+        decayed.add_node(node)
+
+    flat.rebalance()
+    decayed.rebalance()
+
+    assert [child.count for child in flat.root.children or []] == [16, 16]
+    assert all(child.is_leaf for child in flat.root.children or [])
+    assert [len(child.children or []) for child in decayed.root.children or []] == [2, 2]
+
+
+def test_adaptive_relative_gain_can_accept_low_absolute_gain():
+    vectors = {}
+    for sub, sign in (("x", 1), ("y", -1)):
+        for i in range(6):
+            vectors[f"{sub}:{i}"] = np.array([1.0, sign * 0.02, 0.0, 0.0])
+
+    def embed(text):
+        return vectors[text]
+
+    base = dict(
+        split_mode="adaptive",
+        leaf_target=4,
+        max_branches=2,
+        min_cluster_size=2,
+        min_parent_dispersion=0.001,
+        min_split_gain=0.05,
+        model_args={"random_state": 0},
+    )
+    absolute_only = EmbedTree(embedder=embed, config=TreeConfig(**base))
+    relative = EmbedTree(embedder=embed, config=TreeConfig(**base, min_split_gain_ratio=0.5))
+    for key in vectors:
+        node = ContentNode(key, key)
+        absolute_only.add_node(node)
+        relative.add_node(node)
+
+    absolute_only.rebalance()
+    relative.rebalance()
+
+    assert absolute_only.root.is_leaf
+    assert [child.count for child in relative.root.children or []] == [6, 6]
 
 
 def test_labels_via_injected_labeler():

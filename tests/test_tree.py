@@ -164,7 +164,14 @@ def test_pca_config_validation():
     TreeConfig(pca_dims=8, pca_warmup=50, pca_batch_size=16)  # ok
 
 
-def test_adaptive_config_decouples_leaf_capacity_from_max_branches():
-    with pytest.raises(Exception):
-        TreeConfig(split_mode="fixed", leaf_capacity=2, max_branches=5)
-    TreeConfig(split_mode="adaptive", leaf_capacity=2, max_branches=5)
+def test_leaf_target_accepts_legacy_split_threshold_aliases():
+    fixed = TreeConfig(split_mode="fixed", leaf_capacity=2, max_branches=5)
+    assert fixed.leaf_target == 2
+    assert fixed.leaf_capacity == 2
+    assert fixed.min_samples_to_split == 2
+
+    adaptive = TreeConfig(split_mode="adaptive", leaf_capacity=100, min_samples_to_split=6)
+    assert adaptive.leaf_target == 6
+
+    explicit = TreeConfig(split_mode="adaptive", leaf_target=12, leaf_capacity=100, min_samples_to_split=6)
+    assert explicit.leaf_target == 12

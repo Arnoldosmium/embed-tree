@@ -41,7 +41,7 @@ nodes = [
 
 tree = EmbedTree(
     embedder=TagSetEmbedder(["docs", "ingest", "analysis", "schemas"]),
-    config=TreeConfig(max_branches=4, leaf_capacity=2),
+    config=TreeConfig(max_branches=4, leaf_target=2),
 )
 
 tree.add_nodes(nodes)
@@ -96,10 +96,13 @@ TreeConfig(split_mode="fixed")     # default: capacity-driven KMeans
 TreeConfig(split_mode="adaptive")  # choose k only when a split improves cohesion
 ```
 
-In adaptive mode, `max_branches` is the maximum candidate fan-out, not the
-target fan-out. `min_samples_to_split`, `min_cluster_size`,
-`min_parent_dispersion`, and `min_split_gain` control when a branch is coherent
-enough to keep together.
+`leaf_target` is the desired maximum number of content items to leave directly
+under one leaf before attempting a split. In adaptive mode, `max_branches` is
+the maximum candidate fan-out, not the target fan-out. `min_cluster_size`,
+`min_parent_dispersion`, `parent_dispersion_decay`, `min_split_gain`, and
+`min_split_gain_ratio` control when a branch is coherent enough to keep
+together. The legacy `leaf_capacity` and `min_samples_to_split` names are still
+accepted as aliases for `leaf_target`.
 
 Enable split diagnostics with standard Python logging:
 
@@ -110,8 +113,8 @@ logging.basicConfig(level=logging.INFO)
 config = TreeConfig(split_mode="adaptive", log_split_decisions=True)
 ```
 
-This logs candidate k values, cluster sizes, cohesion gain, separation,
-imbalance, final accept/skip decisions, and skip reasons.
+This logs candidate k values, depth, cluster sizes, cohesion gain, relative
+gain, separation, imbalance, final accept/skip decisions, and skip reasons.
 
 For folder-based trees, `FileSystemTreeLoader` uses the file content MD5 as
 `id`. Its optional `text_generator(path, raw_text)` can derive the embed text

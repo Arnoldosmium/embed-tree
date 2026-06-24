@@ -27,7 +27,7 @@ class SplitDecision:
 class SplitStrategy(Protocol):
     """Decide whether and how to split a group of stored content items."""
 
-    def split(self, items: list[Any]) -> SplitDecision:
+    def split(self, items: list[Any], *, depth: int = 0) -> SplitDecision:
         ...
 
 
@@ -37,25 +37,27 @@ class FixedKMeansSplitter:
     def __init__(self, config: TreeConfig) -> None:
         self.config = config
 
-    def split(self, items: list[Any]) -> SplitDecision:
-        if len(items) <= self.config.leaf_capacity:
+    def split(self, items: list[Any], *, depth: int = 0) -> SplitDecision:
+        if len(items) <= self.config.leaf_target:
             _log(
                 self.config,
                 "split.fixed.skip",
                 n=len(items),
-                reason="within_capacity",
-                leaf_capacity=self.config.leaf_capacity,
+                depth=depth,
+                reason="within_leaf_target",
+                leaf_target=self.config.leaf_target,
             )
-            return SplitDecision(False, [], reason="within_capacity")
+            return SplitDecision(False, [], reason="within_leaf_target")
 
         buckets = _kmeans_buckets(items, min(self.config.max_branches, len(items)), self.config)
         if len(buckets) < 2:
-            _log(self.config, "split.fixed.skip", n=len(items), reason="unsplittable")
+            _log(self.config, "split.fixed.skip", n=len(items), depth=depth, reason="unsplittable")
             return SplitDecision(False, [], reason="unsplittable")
         _log(
             self.config,
             "split.fixed.accept",
             n=len(items),
+            depth=depth,
             k=len(buckets),
             sizes=_sizes(buckets.values()),
         )
@@ -68,28 +70,33 @@ class AdaptiveKMeansSplitter:
     def __init__(self, config: TreeConfig) -> None:
         self.config = config
 
-    def split(self, items: list[Any]) -> SplitDecision:
-        if len(items) < self.config.min_samples_to_split:
+    def split(self, items: list[Any], *, depth: int = 0) -> SplitDecision:
+        if len(items) <= self.config.leaf_target:
             _log(
                 self.config,
                 "split.adaptive.skip",
                 n=len(items),
-                reason="too_few_samples",
-                min_samples_to_split=self.config.min_samples_to_split,
+                depth=depth,
+                reason="within_leaf_target",
+                leaf_target=self.config.leaf_target,
             )
-            return SplitDecision(False, [], reason="too_few_samples")
+            return SplitDecision(False, [], reason="within_leaf_target")
 
         vectors = _vectors(items)
         parent_centroid = vectors.mean(axis=0)
         parent_dispersion = _mean_distance(vectors, parent_centroid)
-        if parent_dispersion < self.config.min_parent_dispersion:
+        min_parent_dispersion = _effective_min_parent_dispersion(self.config, depth)
+        if parent_dispersion < min_parent_dispersion:
             _log(
                 self.config,
                 "split.adaptive.skip",
                 n=len(items),
+                depth=depth,
                 reason="coherent",
                 parent_dispersion=parent_dispersion,
-                min_parent_dispersion=self.config.min_parent_dispersion,
+                min_parent_dispersion=min_parent_dispersion,
+                base_min_parent_dispersion=self.config.min_parent_dispersion,
+                parent_dispersion_decay=self.config.parent_dispersion_decay,
             )
             return SplitDecision(False, [], score=parent_dispersion, reason="coherent")
 
@@ -99,6 +106,7 @@ class AdaptiveKMeansSplitter:
                 self.config,
                 "split.adaptive.skip",
                 n=len(items),
+                depth=depth,
                 reason="too_few_supported_clusters",
                 parent_dispersion=parent_dispersion,
                 max_k=max_k,
@@ -113,6 +121,7 @@ class AdaptiveKMeansSplitter:
                     self.config,
                     "split.adaptive.reject",
                     n=len(items),
+                    depth=depth,
                     k=k,
                     reason="single_cluster",
                     parent_dispersion=parent_dispersion,
@@ -123,6 +132,7 @@ class AdaptiveKMeansSplitter:
                     self.config,
                     "split.adaptive.reject",
                     n=len(items),
+                    depth=depth,
                     k=k,
                     reason="small_cluster",
                     sizes=_sizes(buckets.values()),
@@ -136,11 +146,13 @@ class AdaptiveKMeansSplitter:
                 self.config,
                 "split.adaptive.candidate",
                 n=len(items),
+                depth=depth,
                 k=k,
                 sizes=candidate.sizes,
                 parent_dispersion=parent_dispersion,
                 child_dispersion=candidate.child_dispersion,
                 gain=candidate.gain,
+                gain_ratio=candidate.gain_ratio,
                 separation=candidate.separation,
                 imbalance=candidate.imbalance,
                 score=candidate.score,
@@ -153,21 +165,25 @@ class AdaptiveKMeansSplitter:
                 self.config,
                 "split.adaptive.skip",
                 n=len(items),
+                depth=depth,
                 reason="no_valid_split",
                 parent_dispersion=parent_dispersion,
             )
             return SplitDecision(False, [], score=parent_dispersion, reason="no_valid_split")
 
-        if best.gain < self.config.min_split_gain:
+        if not _passes_gain_threshold(best, self.config):
             _log(
                 self.config,
                 "split.adaptive.skip",
                 n=len(items),
+                depth=depth,
                 reason="low_gain",
                 best_k=best.k,
                 sizes=best.sizes,
                 gain=best.gain,
+                gain_ratio=best.gain_ratio,
                 min_split_gain=self.config.min_split_gain,
+                min_split_gain_ratio=self.config.min_split_gain_ratio,
                 score=best.score,
             )
             return SplitDecision(False, [], score=best.score, reason="low_gain")
@@ -176,9 +192,11 @@ class AdaptiveKMeansSplitter:
             self.config,
             "split.adaptive.accept",
             n=len(items),
+            depth=depth,
             k=best.k,
             sizes=best.sizes,
             gain=best.gain,
+            gain_ratio=best.gain_ratio,
             score=best.score,
         )
         return SplitDecision(True, best.clusters, score=best.score)
@@ -197,6 +215,7 @@ class _Candidate:
     sizes: list[int]
     score: float
     gain: float
+    gain_ratio: float
     child_dispersion: float
     separation: float
     imbalance: float
@@ -216,6 +235,7 @@ def _score_candidate(k: int, clusters: list[list[Any]], parent_dispersion: float
         weighted_child_dispersion += (len(cluster) / total) * _mean_distance(vectors, centroid)
 
     gain = parent_dispersion - weighted_child_dispersion
+    gain_ratio = gain / parent_dispersion if parent_dispersion > 0 else 0.0
     separation = _mean_pairwise_distance(centroids)
     imbalance = _imbalance(sizes)
     score = gain + config.separation_weight * separation - config.imbalance_weight * imbalance
@@ -225,10 +245,21 @@ def _score_candidate(k: int, clusters: list[list[Any]], parent_dispersion: float
         sizes=sizes,
         score=score,
         gain=gain,
+        gain_ratio=gain_ratio,
         child_dispersion=weighted_child_dispersion,
         separation=separation,
         imbalance=imbalance,
     )
+
+
+def _effective_min_parent_dispersion(config: TreeConfig, depth: int) -> float:
+    return config.min_parent_dispersion * (config.parent_dispersion_decay**depth)
+
+
+def _passes_gain_threshold(candidate: _Candidate, config: TreeConfig) -> bool:
+    if candidate.gain >= config.min_split_gain:
+        return True
+    return config.min_split_gain_ratio is not None and candidate.gain_ratio >= config.min_split_gain_ratio
 
 
 def _kmeans_buckets(items: list[Any], k: int, config: TreeConfig) -> dict[int, list[Any]]:

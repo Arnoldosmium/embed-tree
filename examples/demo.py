@@ -23,7 +23,7 @@ def main():
     tree = EmbedTree(
         embedder=embed,
         state=JsonTreeLoader("./demo_tree.json"),
-        config=TreeConfig(leaf_capacity=15, max_branches=3),
+        config=TreeConfig(leaf_target=15, max_branches=3),
     )
 
     for label in centers:

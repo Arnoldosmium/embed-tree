@@ -50,7 +50,7 @@ def make_embedder():
 def main():
     tree = EmbedTree(
         embedder=make_embedder(),
-        config=TreeConfig(max_branches=4, leaf_capacity=4, model_args={"random_state": 0}),
+        config=TreeConfig(max_branches=4, leaf_target=4, model_args={"random_state": 0}),
     )
     tree.add_nodes([ContentNode(i, text) for i, text in enumerate(DOCS)])
     tree.organize()              # rebuild clean taxonomy + label nodes
