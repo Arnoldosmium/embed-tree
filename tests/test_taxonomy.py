@@ -1,5 +1,6 @@
 """Taxonomy: divisive rebuild invariants, labeling, browse, persistence."""
 
+import logging
 import os
 from collections import Counter
 
@@ -72,6 +73,91 @@ def test_leaves_are_topic_homogeneous():
         assert leaf.is_leaf and leaf.count == 10
         topics = {topic_of(it.text) for it in leaf.items}
         assert len(topics) == 1, topics  # clustering grouped one topic per leaf
+
+
+def test_adaptive_rebalance_discovers_natural_branches_without_capacity_pressure():
+    def embed(text):
+        return np.array(BASES[topic_of(text)])
+
+    tree = EmbedTree(
+        embedder=embed,
+        config=TreeConfig(
+            split_mode="adaptive",
+            max_branches=5,
+            leaf_capacity=100,
+            min_samples_to_split=6,
+            min_cluster_size=3,
+            min_split_gain=0.01,
+            model_args={"random_state": 0},
+        ),
+    )
+    for topic in TOPICS:
+        for i in range(10):
+            tree.add_node(ContentNode(f"{topic}:{i}", f"{topic} note {i}"))
+
+    assert tree.root.is_leaf  # add() has no capacity pressure here
+    tree.rebalance()
+
+    assert not tree.root.is_leaf
+    assert len(tree.root.children) == 3
+    for child in tree.root.children:
+        assert child.is_leaf
+        assert {topic_of(it.text) for it in child.items} in ({topic} for topic in TOPICS)
+
+
+def test_adaptive_rebalance_keeps_coherent_large_branch_together():
+    def embed(_):
+        return np.ones(4)
+
+    tree = EmbedTree(
+        embedder=embed,
+        config=TreeConfig(
+            split_mode="adaptive",
+            max_branches=5,
+            leaf_capacity=10,
+            min_samples_to_split=6,
+            min_parent_dispersion=0.01,
+            model_args={"random_state": 0},
+        ),
+    )
+    for i in range(30):
+        tree.add_node(ContentNode(i, f"same topic {i}"))
+
+    tree.rebalance()
+
+    assert tree.root.is_leaf
+    assert tree.root.count == 30
+
+
+def test_adaptive_split_verbose_logs_decision_details(caplog):
+    def embed(text):
+        return np.array(BASES[topic_of(text)])
+
+    tree = EmbedTree(
+        embedder=embed,
+        config=TreeConfig(
+            split_mode="adaptive",
+            log_split_decisions=True,
+            max_branches=3,
+            leaf_capacity=100,
+            min_samples_to_split=6,
+            min_cluster_size=3,
+            min_split_gain=0.01,
+            model_args={"random_state": 0},
+        ),
+    )
+    for topic in TOPICS:
+        for i in range(4):
+            tree.add_node(ContentNode(f"{topic}:{i}", f"{topic} note {i}"))
+
+    caplog.set_level(logging.INFO, logger="embed_tree.splitters")
+    tree.rebalance()
+
+    assert "split.adaptive.candidate" in caplog.text
+    assert "split.adaptive.accept" in caplog.text
+    assert "parent_dispersion=" in caplog.text
+    assert "gain=" in caplog.text
+    assert "sizes=" in caplog.text
 
 
 def test_labels_via_injected_labeler():

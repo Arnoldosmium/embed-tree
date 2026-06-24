@@ -51,6 +51,17 @@ class TreeConfig(BaseModel):
     max_branches: int = 5  # max sub-topics per level (k for KMeans)
     leaf_capacity: int = 10  # max items in a leaf before it subdivides
     split_algo: str = "kmeans"  # M0: "kmeans" only
+    split_mode: Literal["fixed", "adaptive"] = "fixed"
+
+    # Adaptive split mode treats max_branches as a hard upper bound, then picks
+    # the best supported k only when a split materially improves cohesion.
+    log_split_decisions: bool = False
+    min_samples_to_split: int = 8
+    min_cluster_size: int = 2
+    min_parent_dispersion: float = 0.08
+    min_split_gain: float = 0.05
+    separation_weight: float = 0.05
+    imbalance_weight: float = 0.05
 
     # Distance is always cosine: vectors are L2-normalized and compared with
     # Euclidean (rank-equivalent on the unit sphere). Embeddings encode meaning
@@ -85,10 +96,24 @@ class TreeConfig(BaseModel):
             )
         return v
 
+    @field_validator("min_samples_to_split", "min_cluster_size")
+    @classmethod
+    def _positive_int(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("adaptive split integer thresholds must be >= 1")
+        return v
+
+    @field_validator("min_parent_dispersion", "min_split_gain", "separation_weight", "imbalance_weight")
+    @classmethod
+    def _nonnegative_float(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("adaptive split score thresholds/weights must be >= 0")
+        return v
+
     @model_validator(mode="after")
     def _cross_field(self) -> "TreeConfig":
-        if self.leaf_capacity < self.max_branches:
-            raise ValueError("leaf_capacity must be >= max_branches")
+        if self.split_mode == "fixed" and self.leaf_capacity < self.max_branches:
+            raise ValueError("leaf_capacity must be >= max_branches when split_mode='fixed'")
         if self.pca_dims is not None:
             if self.pca_dims < 2:
                 raise ValueError("pca_dims must be >= 2")

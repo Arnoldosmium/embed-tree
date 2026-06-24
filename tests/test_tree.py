@@ -162,3 +162,9 @@ def test_pca_config_validation():
     with pytest.raises(Exception):
         TreeConfig(pca_dims=1)  # too small
     TreeConfig(pca_dims=8, pca_warmup=50, pca_batch_size=16)  # ok
+
+
+def test_adaptive_config_decouples_leaf_capacity_from_max_branches():
+    with pytest.raises(Exception):
+        TreeConfig(split_mode="fixed", leaf_capacity=2, max_branches=5)
+    TreeConfig(split_mode="adaptive", leaf_capacity=2, max_branches=5)

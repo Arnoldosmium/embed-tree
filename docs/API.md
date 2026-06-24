@@ -33,6 +33,26 @@ otherwise it is computed from children.
 EmbedTree(embedder, config=None, *, state=None, labeler=None)
 ```
 
+`TreeConfig.split_mode` defaults to `"fixed"`, preserving the original
+capacity-driven KMeans behavior. Set `split_mode="adaptive"` to let
+`rebalance()` / `organize()` choose a useful k from `2..max_branches` only when
+the split improves branch cohesion. Adaptive thresholds:
+
+```python
+TreeConfig(
+    split_mode="adaptive",
+    log_split_decisions=False,
+    min_samples_to_split=8,
+    min_cluster_size=2,
+    min_parent_dispersion=0.08,
+    min_split_gain=0.05,
+)
+```
+
+Set `log_split_decisions=True` and enable the `embed_tree.splitters` logger to
+inspect candidate k values, cluster sizes, cohesion gain, separation,
+imbalance, and final accept/skip reasons.
+
 ### Insert
 
 ```python

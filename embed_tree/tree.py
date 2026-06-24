@@ -4,10 +4,10 @@ Model:
   - Each content -> exactly one vector -> a unique leaf (strict tree, single
     membership).
   - A node caches an incremental centroid (vsum / count) for fast routing.
-  - Incremental `add` routes a vector down to a leaf, then splits that leaf via
-    KMeans once it exceeds leaf_capacity (fan-out = max_branches).
-  - `rebalance()` rebuilds a clean, balanced taxonomy top-down (divisive
-    clustering), and `label()` names every node.
+  - Incremental `add` routes a vector down to a leaf, then asks the configured
+    split strategy whether/how to split once the leaf exceeds leaf_capacity.
+  - `rebalance()` rebuilds a clean taxonomy top-down (divisive clustering),
+    and `label()` names every node.
 
 Vectors:
   - Each item keeps its *raw* embedding (source of truth, kept only when PCA is
@@ -32,13 +32,13 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Hashable, Iterable
 
 import numpy as np
-from sklearn.cluster import KMeans
 
 from .config import TreeConfig
 from .reducers import Reducer
 from .representation import BranchNode, ContentNode
 from .labelers import KeywordLabeler, LabelCandidate, LabelRequest, Labeler, LLMLabeler
 from .persisters import MaterializedTreeState
+from .splitters import make_splitter
 
 Content = Any
 Vector = np.ndarray
@@ -95,6 +95,7 @@ class EmbedTree:
         self.state = state
         self.config = config or TreeConfig()
         self._labeler = labeler
+        self._splitter = make_splitter(self.config)
 
         self.reducer: Reducer = Reducer.from_config(self.config)
         self._next_node_id = 0
@@ -244,8 +245,8 @@ class EmbedTree:
         """Rebuild a clean taxonomy from all items via top-down divisive
         clustering, refitting PCA per the mode contract first.
 
-        Unlike incremental `add`, this produces a balanced hierarchy with
-        <= max_branches children per node and <= leaf_capacity items per leaf.
+        Unlike incremental `add`, this rebuilds the hierarchy top-down using
+        the configured split strategy.
         """
         items = self._all_items() + self._warmup_buf
         if self.reducer.kind != "identity" and items:
@@ -301,28 +302,19 @@ class EmbedTree:
     # --------------------------------------------------------- taxonomy build
 
     def _divisive(self, items: list[_StoredContent]) -> _TreeNode:
-        """Recursively split items into <= max_branches clusters until each
-        group fits in a leaf (<= leaf_capacity). Top-down, balanced, clean."""
+        """Recursively split items using the configured split strategy."""
         node = self._new_node()
         vecs = np.stack([it.vector for it in items])
         node.vsum = vecs.sum(axis=0)
         node.count = len(items)
-        if len(items) <= self.config.leaf_capacity:
+
+        decision = self._splitter.split(items)
+        if not decision.should_split:
             node.items = items
+            node.unsplittable = decision.reason == "unsplittable"
             return node
 
-        k = min(self.config.max_branches, len(items))
-        labels = KMeans(n_clusters=k, n_init="auto", **self.config.model_args).fit_predict(vecs)
-        buckets: dict[int, list[_StoredContent]] = {}
-        for lbl, it in zip(labels, items):
-            buckets.setdefault(int(lbl), []).append(it)
-
-        if len(buckets) < 2:  # all near-identical; cannot subdivide
-            node.items = items
-            node.unsplittable = True
-            return node
-
-        node.children = [self._divisive(b) for b in buckets.values()]
+        node.children = [self._divisive(cluster) for cluster in decision.clusters]
         return node
 
     def _empty_root(self) -> _TreeNode:
@@ -487,20 +479,13 @@ class EmbedTree:
 
     def _split(self, leaf: _TreeNode) -> None:
         items = leaf.items or []
-        k = min(self.config.max_branches, len(items))
-        X = np.stack([it.vector for it in items])
-        labels = KMeans(n_clusters=k, n_init="auto", **self.config.model_args).fit_predict(X)
-
-        buckets: dict[int, list[_StoredContent]] = {}
-        for lbl, it in zip(labels, items):
-            buckets.setdefault(int(lbl), []).append(it)
-
-        if len(buckets) < 2:  # KMeans collapsed everything into one cluster
-            leaf.unsplittable = True
+        decision = self._splitter.split(items)
+        if not decision.should_split:
+            leaf.unsplittable = decision.reason == "unsplittable"
             return
 
         children: list[_TreeNode] = []
-        for bucket in buckets.values():
+        for bucket in decision.clusters:
             child = self._new_node()
             child.items = bucket
             child.vsum = np.sum([it.vector for it in bucket], axis=0)

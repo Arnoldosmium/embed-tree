@@ -89,6 +89,30 @@ len(tree)
 `BranchNode` is the public tree shape. It can represent an input branch from a
 loader or the organized output from `EmbedTree.to_branch()`.
 
+`TreeConfig.split_mode` controls how branches are discovered:
+
+```python
+TreeConfig(split_mode="fixed")     # default: capacity-driven KMeans
+TreeConfig(split_mode="adaptive")  # choose k only when a split improves cohesion
+```
+
+In adaptive mode, `max_branches` is the maximum candidate fan-out, not the
+target fan-out. `min_samples_to_split`, `min_cluster_size`,
+`min_parent_dispersion`, and `min_split_gain` control when a branch is coherent
+enough to keep together.
+
+Enable split diagnostics with standard Python logging:
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+config = TreeConfig(split_mode="adaptive", log_split_decisions=True)
+```
+
+This logs candidate k values, cluster sizes, cohesion gain, separation,
+imbalance, final accept/skip decisions, and skip reasons.
+
 For folder-based trees, `FileSystemTreeLoader` uses the file content MD5 as
 `id`. Its optional `text_generator(path, raw_text)` can derive the embed text
 from raw file text while preserving file identity. Its optional
